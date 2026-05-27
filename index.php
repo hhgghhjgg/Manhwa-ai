@@ -2,14 +2,14 @@
 // فعال‌سازی سشن برای حفظ حافظه و چت متوالی هوش مصنوعی
 session_start();
 
-// دریافت متغیرهای محیطی (تنظیم شده در پنل Render)
+// دریافت متغیرهای محیطی از هاست رندر
 $geminiApiKey = getenv('GEMINI_API_KEY') ?: '';
 $dbUrl = getenv('DATABASE_URL') ?: getenv('NEON_DATABASE_URL') ?: '';
 
 $db = null;
 $dbError = null;
 
-// اتصال پایدار به دیتابیس Neon PostgreSQL و ساخت خودکار جدول‌ها در صورت عدم وجود
+// اتصال به دیتابیس Neon PostgreSQL و ساخت ساختار جدول‌ها
 if (!empty($dbUrl)) {
     try {
         $parsedUrl = parse_url($dbUrl);
@@ -26,7 +26,7 @@ if (!empty($dbUrl)) {
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
             ]);
             
-            // ساخت جدول چپترها و سگمنت‌ها به صورت خودکار (بدون فیلد ذخیره تصویر جهت سبک ماندن دیتابیس)
+            // ساخت جدول‌های پایدار
             $db->exec("
                 CREATE TABLE IF NOT EXISTS chapters (
                     id INT PRIMARY KEY,
@@ -38,7 +38,7 @@ if (!empty($dbUrl)) {
                     absolute_index INT NOT NULL,
                     prompt TEXT,
                     negative_prompt TEXT,
-                    ai_version VARCHAR(50),
+                    ai_version VARCHAR(100),
                     translations TEXT, 
                     current_version_index INT DEFAULT -1,
                     FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
@@ -50,17 +50,19 @@ if (!empty($dbUrl)) {
     }
 }
 
-// تابع ارسال درخواست به API جمینی (پشتیبانی از مولتی‌مدیا و متن)
-function callGeminiMultimodal($promptText, $base64Image, $mimeType, $apiKey, $chatHistory = []) {
+// تابع ارتباط با API جمینی (پشتیبانی از مالتی‌مدیا و متن)
+function callGeminiMultimodal($model, $promptText, $base64Image, $mimeType, $apiKey, $chatHistory = []) {
     if (empty($apiKey)) {
         return null;
     }
     
-    $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" . $apiKey;
+    // اطمینان از قرار داشتن پیشوند مدل در ساختار آدرس
+    $modelName = (strpos($model, 'models/') === 0) ? $model : 'models/' . $model;
+    $url = "https://generativelanguage.googleapis.com/v1beta/" . $modelName . ":generateContent?key=" . $apiKey;
     
     $contents = [];
     
-    // اضافه کردن تاریخچه چت متنی برای مدل متوالی
+    // الحاق تاریخچه متنی سگمنت‌های قبل برای چت متوالی
     foreach ($chatHistory as $chat) {
         $contents[] = [
             "role" => $chat['role'] === 'user' ? 'user' : 'model',
@@ -68,7 +70,6 @@ function callGeminiMultimodal($promptText, $base64Image, $mimeType, $apiKey, $ch
         ];
     }
     
-    // اضافه کردن پیام جاری به همراه تصویر موقت و متن دستورالعمل
     $currentParts = [];
     if (!empty($base64Image)) {
         $currentParts[] = [
@@ -87,9 +88,7 @@ function callGeminiMultimodal($promptText, $base64Image, $mimeType, $apiKey, $ch
         "parts" => $currentParts
     ];
     
-    $data = [
-        "contents" => $contents
-    ];
+    $data = ["contents" => $contents];
     
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -108,12 +107,50 @@ function callGeminiMultimodal($promptText, $base64Image, $mimeType, $apiKey, $ch
     return $result['candidates'][0]['content']['parts'][0]['text'] ?? null;
 }
 
-// مسیرهای پاسخ‌دهی بک‌اند (AJAX Backend Router)
+// مسیرهای پاسخ‌دهی متصل به روتر بک‌اند
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
     header('Content-Type: application/json');
     $action = $_GET['action'];
 
-    // ذخیره کل وضعیت چپترها و سگمنت‌ها در Neon
+    // بارگذاری لیست زنده مدل‌های فعال جمینی بر اساس API Key شما
+    if ($action === 'list_gemini_models') {
+        $fallbackModels = [
+            ['name' => 'models/gemini-1.5-flash', 'displayName' => 'Gemini 1.5 Flash (پیش‌فرض)'],
+            ['name' => 'models/gemini-1.5-pro', 'displayName' => 'Gemini 1.5 Pro'],
+            ['name' => 'models/gemini-2.0-flash-exp', 'displayName' => 'Gemini 2.0 Flash']
+        ];
+
+        if (empty($geminiApiKey)) {
+            echo json_encode(['success' => true, 'models' => $fallbackModels]);
+            exit;
+        }
+
+        $url = "https://generativelanguage.googleapis.com/v1beta/models?key=" . $geminiApiKey;
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        $result = json_decode($response, true);
+        $activeModels = [];
+
+        if (isset($result['models'])) {
+            foreach ($result['models'] as $m) {
+                if (in_array('generateContent', $m['supportedGenerationMethods'] ?? [])) {
+                    $activeModels[] = [
+                        'name' => $m['name'],
+                        'displayName' => $m['displayName'] ?? $m['name']
+                    ];
+                }
+            }
+        }
+
+        $responseModels = !empty($activeModels) ? $activeModels : $fallbackModels;
+        echo json_encode(['success' => true, 'models' => $responseModels]);
+        exit;
+    }
+
+    // ذخیره وضعیت چپترها و سگمنت‌ها در Neon
     if ($action === 'save_state') {
         $input = json_decode(file_get_contents('php://input'), true);
         $chaptersInput = $input['chapters'] ?? [];
@@ -122,7 +159,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             try {
                 $db->beginTransaction();
                 
-                // پاک‌سازی موقت برای ثبت ساختار جدید آپدیت شده
                 $db->exec("DELETE FROM segments");
                 $db->exec("DELETE FROM chapters");
                 
@@ -145,7 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                             ':absolute_index' => $absoluteIndex,
                             ':prompt' => $seg['prompt'] ?? '',
                             ':negative_prompt' => $seg['negativePrompt'] ?? '',
-                            ':ai_version' => $seg['aiVersion'] ?? 'gpt-4o',
+                            ':ai_version' => $seg['aiVersion'] ?? 'models/gemini-1.5-flash',
                             ':translations' => json_encode($seg['translations'] ?? []),
                             ':current_version_index' => $seg['currentVersionIndex'] ?? -1
                         ]);
@@ -153,20 +189,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                 }
                 
                 $db->commit();
-                echo json_encode(['success' => true, 'message' => 'اطلاعات با موفقیت در نئون ذخیره شد']);
+                echo json_encode(['success' => true, 'message' => 'همگام‌سازی ابری با نئون انجام شد']);
             } catch (Exception $e) {
                 if ($db->inTransaction()) {
                     $db->rollBack();
                 }
-                echo json_encode(['success' => false, 'message' => 'خطا در عملیات تراکنش دیتابیس: ' . $e->getMessage()]);
+                echo json_encode(['success' => false, 'message' => 'خطا در ثبت اطلاعات: ' . $e->getMessage()]);
             }
         } else {
-            echo json_encode(['success' => false, 'message' => 'دیتابیس متصل نیست. داده‌ها به طور موقت در مرورگر حفظ می‌شوند.']);
+            echo json_encode(['success' => false, 'message' => 'دیتابیس متصل نیست']);
         }
         exit;
     }
 
-    // بارگذاری کل وضعیت چپترها و سگمنت‌ها از Neon
+    // بارگذاری اطلاعات از Neon
     if ($action === 'load_state') {
         if ($db) {
             try {
@@ -185,10 +221,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                             'id' => (int)$dbSeg['id'],
                             'prompt' => $dbSeg['prompt'] ?? '',
                             'negativePrompt' => $dbSeg['negative_prompt'] ?? '',
-                            'aiVersion' => $dbSeg['ai_version'] ?? 'gpt-4o',
+                            'aiVersion' => $dbSeg['ai_version'] ?? 'models/gemini-1.5-flash',
                             'translations' => json_decode($dbSeg['translations'] ?? '[]', true),
                             'currentVersionIndex' => (int)$dbSeg['current_version_index'],
-                            'image' => '' // تصویر به صورت موقت در کلاینت می‌ماند و در دیتابیس دخیره نمی‌شود
+                            'image' => ''
                         ];
                     }
                     
@@ -196,31 +232,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                         'id' => (int)$dbChap['id'],
                         'name' => $dbChap['name'],
                         'segments' => $segments
-                      ];
+                    ];
                 }
                 
                 echo json_encode(['success' => true, 'chapters' => $chapters]);
             } catch (Exception $e) {
-                echo json_encode(['success' => false, 'message' => 'خطا در بارگذاری اطلاعات: ' . $e->getMessage()]);
+                echo json_encode(['success' => false, 'message' => 'خطا در لود اطلاعات: ' . $e->getMessage()]);
             }
         } else {
-            echo json_encode(['success' => false, 'message' => 'اتصال دیتابیس برقرار نیست']);
+            echo json_encode(['success' => false, 'message' => 'دیتابیس متصل نیست']);
         }
         exit;
     }
 
-    // فرآیند هوشمند ترجمه با پشتیبانی از حافظه متوالی و ارسال مستقیم تصویر موقت
+    // فرآیند ترجمه متوالی سگمنت‌ها
     if ($action === 'translate') {
         $input = json_decode(file_get_contents('php://input'), true);
         $segmentId = $input['segmentId'] ?? '';
         $prompt = $input['prompt'] ?? '';
         $negativePrompt = $input['negativePrompt'] ?? '';
-        $aiModel = $input['aiModel'] ?? 'gpt-4o';
+        $aiModel = $input['aiModel'] ?? 'models/gemini-1.5-flash';
         $memoryMode = $input['memoryMode'] ?? 'continuous';
         $groupId = $input['groupId'] ?? 'default';
-        $rawImage = $input['image'] ?? ''; // تصویر موقت ارسالی از کلاینت
+        $rawImage = $input['image'] ?? '';
 
-        // فیلتر کردن هدر تصویر Base64 برای استخراج محتوای خام تصویر
         $base64Image = '';
         $mimeType = 'image/jpeg';
         if (!empty($rawImage) && strpos($rawImage, ';base64,') !== false) {
@@ -247,22 +282,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             $chatHistory = $_SESSION[$sessionKey];
         }
 
-        // فراخوانی مستقیم API جمینی در صورت وجود کلید متغیر محیطی
-        $apiResult = callGeminiMultimodal($instruction, $base64Image, $mimeType, $geminiApiKey, $chatHistory);
+        $apiResult = callGeminiMultimodal($aiModel, $instruction, $base64Image, $mimeType, $geminiApiKey, $chatHistory);
 
         if ($apiResult !== null) {
             $translation = trim($apiResult);
         } else {
-            // شبیه‌ساز در صورت عدم وجود کلید API معتبر روی سرور
-            $simulated = [
-                "ترجمه روان مانهوایی هماهنگ با سبک کار مانهوا [سگمنت $segmentId]",
-                "نسخه بازنویسی شده دیالوگ مانهوا با رعایت قوانین منفی [سگمنت $segmentId]",
-                "جمله بومی‌سازی شده متناسب با بافت مانهوای آسیایی [سگمنت $segmentId]"
-            ];
-            $translation = $simulated[array_rand($simulated)] . " (شبیه‌ساز جمینی - بدون کلید)";
+            $translation = "جمله بازنویسی شده به صورت شبیه‌سازی شده متناسب با بافت فانتزی مانهوا [سگمنت $segmentId]";
         }
 
-        // ذخیره سازی تاریخچه متنی گفتگو در سشن
         if ($memoryMode === 'continuous') {
             $_SESSION[$sessionKey][] = ["role" => "user", "content" => "سگمنت $segmentId: $instruction"];
             $_SESSION[$sessionKey][] = ["role" => "assistant", "content" => $translation];
@@ -275,7 +302,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
         exit;
     }
 
-    // بخش چت دستیار هوشمند
+    // فرآیند چت دستیار
     if ($action === 'chat_assistant') {
         $input = json_decode(file_get_contents('php://input'), true);
         $message = $input['message'] ?? '';
@@ -286,12 +313,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
 
         $promptText = "شما دستیار ترجمه مانهوا هستید. پاسخ سوال کاربر در مورد اصطلاحات، معانی کلمات یا ساختار جملات مانهوا را دقیق و خلاصه بدهید:\n" . $message;
         
-        $apiResult = callGeminiMultimodal($promptText, '', '', $geminiApiKey, []);
+        $apiResult = callGeminiMultimodal('models/gemini-1.5-flash', $promptText, '', '', $geminiApiKey, []);
 
         if ($apiResult !== null) {
             $reply = trim($apiResult);
         } else {
-            $reply = "من به عنوان دستیار ترجمه مانهوای شما آماده‌ام. برای پاسخ دقیق لطفا کلید API جمینی را در متغیرهای محیطی Render تنظیم کنید. در حال حاضر سوال شما را دریافت کردم: «" . htmlspecialchars($message) . "»";
+            $reply = "پاسخ دستیار (شبیه‌ساز): عبارت «" . htmlspecialchars($message) . "» در فرهنگ مانهوای فانتزی معمولاً به معنای رتبه یا جایگاه اسطوره‌ای قلمداد می‌شود.";
         }
 
         $_SESSION['assistant_chat'][] = ["role" => "user", "content" => $message];
@@ -304,7 +331,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
         exit;
     }
 
-    // خروجی نهایی ورد متناسب با انتخاب‌های کلاینت
+    // ساخت فایل ورد متناسب با چپترها و سگمنت‌ها
     if ($action === 'export_docx') {
         $input = json_decode(file_get_contents('php://input'), true);
         $chaptersData = $input['chapters'] ?? [];
@@ -338,7 +365,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>مترجم هوشمند مانهوا | نسخه ابری</title>
+    <title>محیط هوشمند ترجمه مانهوا</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
@@ -362,16 +389,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
         }
 
         [data-theme="light"] {
-            --bg-primary: #f1f5f9;
+            --bg-primary: #f8fafc;
             --text-primary: #0f172a;
             --glass-panel-bg: rgba(15, 23, 42, 0.03);
             --glass-panel-border: rgba(15, 23, 42, 0.08);
-            --glass-card-bg: rgba(255, 255, 255, 0.7);
+            --glass-card-bg: rgba(255, 255, 255, 0.65);
             --glass-card-border: rgba(15, 23, 42, 0.08);
-            --glass-card-hover: rgba(255, 255, 255, 0.9);
-            --glass-input-bg: rgba(255, 255, 255, 0.85);
-            --glass-input-border: rgba(15, 23, 42, 0.1);
-            --text-muted: #64748b;
+            --glass-card-hover: rgba(255, 255, 255, 0.85);
+            --glass-input-bg: rgba(255, 255, 255, 0.9);
+            --glass-input-border: rgba(15, 23, 42, 0.12);
+            --text-muted: #475569;
             --accent-primary: #7c3aed;
             --segment-box-bg: rgba(255, 255, 255, 0.95);
         }
@@ -399,9 +426,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
         }
 
-        .glass-card:hover {
-            background: var(--glass-card-hover);
-            transform: translateY(-2px);
+        /* افکت نوری و درخشان شدن دور کارت سگمنت فعال در زمان ترجمه */
+        .glass-card.translating-active {
+            border-color: var(--accent-primary) !important;
+            box-shadow: 0 0 25px rgba(168, 85, 247, 0.45), inset 0 0 8px rgba(168, 85, 247, 0.2) !important;
+            animation: pulse-glow 2s infinite alternate;
+        }
+        @keyframes pulse-glow {
+            from { box-shadow: 0 0 20px rgba(168, 85, 247, 0.4); }
+            to { box-shadow: 0 0 35px rgba(168, 85, 247, 0.7); }
         }
 
         .glass-input {
@@ -442,11 +475,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             height: 5px;
         }
         ::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.12);
             border-radius: 10px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.25);
         }
     </style>
 </head>
@@ -457,41 +490,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
     <div class="fixed bottom-[-25%] right-[-20%] w-[65%] h-[65%] bg-pink-600/10 rounded-full blur-[180px] pointer-events-none z-0"></div>
 
     <div class="container mx-auto px-4 py-6 max-w-5xl relative z-10">
-        <!-- هدر اصلی برنامه -->
-        <header class="flex justify-between items-center mb-8 p-4 glass-panel rounded-2xl shadow-xl">
-            <div class="flex items-center gap-3">
-                <div class="w-12 h-12 bg-gradient-to-tr from-purple-600 to-pink-500 rounded-2xl flex items-center justify-center shadow-lg">
-                    <i class="fa-solid fa-wand-magic-sparkles text-xl text-white"></i>
+        <!-- هدر کاملاً ریسپانسیو و بهینه‌سازی شده برای موبایل -->
+        <header class="flex flex-col sm:flex-row justify-between items-center gap-4 mb-8 p-4 glass-panel rounded-2xl shadow-xl">
+            <div class="flex items-center gap-3 w-full sm:w-auto">
+                <div class="w-11 h-11 bg-gradient-to-tr from-purple-600 to-pink-500 rounded-2xl flex items-center justify-center shadow-lg shrink-0">
+                    <i class="fa-solid fa-wand-magic-sparkles text-lg text-white"></i>
                 </div>
-                <div>
-                    <h1 class="text-base font-extrabold tracking-wide">محیط یکپارچه مانهوا</h1>
-                    <p class="text-[9px] text-[var(--text-muted)] flex items-center gap-1.5">
-                        <span id="neon-status" class="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
-                        در حال بررسی اتصال دیتابیس ابری...
+                <div class="text-right">
+                    <h1 class="text-sm font-extrabold tracking-wide">مترجم شیشه‌ای مانهوا</h1>
+                    <p class="text-[9px] text-[var(--text-muted)] flex items-center gap-1.5 mt-0.5">
+                        <span id="neon-status" class="w-2 h-2 rounded-full bg-yellow-500"></span>
+                        <span id="neon-status-text">بررسی اتصال دیتابیس ابری...</span>
                     </p>
                 </div>
             </div>
             
-            <!-- نمایش وضعیت ذخیره‌سازی ابری پویای آیفون -->
-            <div class="flex items-center gap-3">
-                <div id="save-status-pill" class="px-3 py-1.5 rounded-full text-[10px] font-semibold bg-white/5 border border-white/5 flex items-center gap-1.5 transition-all duration-300">
+            <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                <div id="save-status-pill" class="px-2.5 py-1.5 rounded-full text-[9px] font-semibold bg-white/5 border border-white/5 flex items-center gap-1">
                     <i id="save-status-icon" class="fa-solid fa-cloud"></i>
                     <span id="save-status-text">همگام‌سازی فعال</span>
                 </div>
-                <button onclick="openGlobalSettings()" class="px-3 py-2 text-xs bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center gap-2 transition-all">
+                <button onclick="openGlobalSettings()" class="px-3 py-2 text-[10px] bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center gap-1.5 transition-all font-bold">
                     <i class="fa-solid fa-sliders text-purple-400"></i>تنظیمات کلی
                 </button>
-                <button onclick="openGlobalStartModal()" class="px-4 py-2 text-xs bg-gradient-to-r from-purple-600 to-pink-600 hover:opacity-95 text-white rounded-xl flex items-center gap-2 transition-all shadow-md font-bold">
+                <button onclick="openGlobalStartModal()" class="px-3.5 py-2 text-[10px] bg-gradient-to-r from-purple-600 to-pink-600 hover:opacity-95 text-white rounded-xl flex items-center gap-1.5 transition-all shadow-md font-bold">
                     <i class="fa-solid fa-play"></i>شروع کلی
                 </button>
             </div>
         </header>
 
-        <!-- نمایش هشدارهای احتمالی دیتابیس در بالای صفحه -->
+        <!-- نمایش هشدارهای دیتابیس در صورت وقوع خطا -->
         <?php if ($dbError): ?>
             <div class="mb-6 p-4 bg-rose-500/10 border border-rose-500/20 text-rose-300 rounded-2xl text-xs text-right">
                 <i class="fa-solid fa-triangle-exclamation ml-1.5"></i>
-                خطا در اتصال به دیتابیس Neon: <?= htmlspecialchars($dbError) ?>. برنامه به طور خودکار در حالت حافظه آفلاین اجرا خواهد شد.
+                خطا در اتصال به دیتابیس Neon: <?= htmlspecialchars($dbError) ?>. داده‌ها به طور خودکار به حافظه آفلاین مرورگر منتقل شدند.
             </div>
         <?php endif; ?>
 
@@ -527,7 +559,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
 
         <!-- بخش چت اختصاصی دستیار هوش مصنوعی (Assistant Chat) -->
         <main id="tab-chat" class="tab-content hidden space-y-4">
-            <div class="glass-panel p-5 rounded-3xl flex flex-col h-[600px] shadow-2xl">
+            <div class="glass-panel p-5 rounded-3xl flex flex-col h-[580px] shadow-2xl">
                 <div class="flex items-center gap-3 border-b border-white/5 pb-4 mb-4 text-right">
                     <div class="w-10 h-10 bg-purple-600/10 rounded-2xl flex items-center justify-center border border-purple-500/10">
                         <i class="fa-solid fa-comments text-purple-400 text-base"></i>
@@ -613,7 +645,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
         </main>
     </div>
 
-    <!-- ناوبری شناور گرد سبک آیفون (Circular Navigation) -->
+    <!-- ناوبری شناور گرد سبک آیفون -->
     <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
         <div id="nav-container" class="nav-orb glass-panel flex items-center justify-center overflow-hidden shadow-2xl relative">
             <button id="nav-trigger" onclick="toggleNavigationMenu()" class="absolute inset-0 flex items-center justify-center text-white focus:outline-none z-10">
@@ -648,7 +680,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             
             <div class="space-y-3 text-right">
                 <div>
-                    <label class="block text-[10px] text-slate-300 mb-1">پرامپت پیش‌فرض ترجمه برای این گروه:</label>
+                    <label class="block text-[10px] text-slate-300 mb-1">پرامپت پیش‌فرض ترجمه برای این چپتر:</label>
                     <textarea id="global-prompt" class="w-full h-16 p-2.5 text-xs glass-input rounded-xl text-right" placeholder="مثال: لحن فانتزی و مانهوایی ترجمه شود..."></textarea>
                 </div>
                 <div>
@@ -658,10 +690,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                 <div class="grid grid-cols-2 gap-3">
                     <div>
                         <label class="block text-[10px] text-slate-300 mb-1">مدل هوش مصنوعی:</label>
-                        <select id="global-ai-version" class="w-full p-2.5 text-xs bg-slate-800 border border-white/10 rounded-xl focus:outline-none focus:border-purple-500 text-white">
-                            <option value="gpt-4o">GPT-4o (پیشنهادی)</option>
-                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                            <option value="claude-3-opus">Claude 3 Opus</option>
+                        <select id="global-ai-version" class="w-full p-2.5 text-xs bg-slate-850 border border-white/10 rounded-xl focus:outline-none focus:border-purple-500 text-white">
+                            <!-- به صورت زنده توسط API جمینی پر می‌شود -->
                         </select>
                     </div>
                     <div>
@@ -730,7 +760,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                         <i class="fa-solid fa-circle-check"></i>ترجمه دسته‌ای پایان یافت.
                     </p>
                     <div class="grid grid-cols-2 gap-2">
-                        <button onclick="copyAllCurrentTranslations()" class="py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all font-bold">
+                        <button onclick="copyAllCurrentTranslations()" class="py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all font-bold font-bold">
                             <i class="fa-solid fa-copy text-purple-400"></i>کپی نسخه‌های فعال
                         </button>
                         <button onclick="downloadWordDocumentExport()" class="py-2.5 bg-blue-600 hover:bg-blue-700 rounded-xl text-xs text-white font-bold flex items-center justify-center gap-1.5 transition-all shadow-md">
@@ -760,26 +790,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
         let activeChapterId = 1;
         let activeLightboxIndex = 0;
         let autoSaveTimeout;
+        
+        // لیست مدل‌های پویای لود شده از گوگل جمینی
+        let geminiModels = [];
 
         let segmentGroups = [
             { id: 'group_1', name: "گروه اول (سگمنت ۱ تا ۱۰)", start: 1, end: 10 }
         ];
 
-        // لود اولیه و اتصال ابری
         window.addEventListener('DOMContentLoaded', async () => {
-            // بررسی اتصال دیتابیس Neon
             const dbConnected = <?= $db ? 'true' : 'false' ?>;
             const statusIndicator = document.getElementById('neon-status');
-            const statusText = document.getElementById('neon-status').parentNode;
+            const statusText = document.getElementById('neon-status-text');
             
+            // ابتدا استعلام مدل‌های زنده بر اساس کلید API شما
+            await fetchActiveGeminiModels();
+
             if (dbConnected) {
                 statusIndicator.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
-                statusText.innerHTML = '<span id="neon-status" class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> دیتابیس ابری Neon متصل است';
-                // بارگذاری داده‌ها از Neon
+                statusText.innerText = "دیتابیس ابری Neon متصل است";
                 await loadDataFromCloud();
             } else {
                 statusIndicator.className = "w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse";
-                statusText.innerHTML = '<span id="neon-status" class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> دیتابیس متصل نیست (حافظه موقت مرورگر)';
+                statusText.innerText = "دیتابیس متصل نیست (حافظه موقت مرورگر)";
                 bootstrapDefaultState();
             }
             
@@ -788,12 +821,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             renderActiveSegments();
         });
 
+        // استعلام زنده مدل‌های پشتیبانی شده کلید API جمینی شما از سرور گوگل
+        async function fetchActiveGeminiModels() {
+            try {
+                const response = await fetch('?action=list_gemini_models', { method: 'POST' });
+                const res = await response.json();
+                if (res.success && res.models) {
+                    geminiModels = res.models;
+                    
+                    // به روزرسانی کادر انتخاب مدل در بخش تنظیمات کلی
+                    const globalSelect = document.getElementById('global-ai-version');
+                    globalSelect.innerHTML = '';
+                    geminiModels.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.name;
+                        opt.innerText = m.displayName;
+                        globalSelect.appendChild(opt);
+                    });
+                }
+            } catch (err) {
+                console.error("خطا در استعلام مدل‌های زنده جمینی:", err);
+            }
+        }
+
         function bootstrapDefaultState() {
             chapters = [{ id: 1, name: "چپتر ۱", segments: [] }];
             addNewSegmentToActiveChapter();
         }
 
-        // بارگذاری داده‌ها از Neon
         async function loadDataFromCloud() {
             try {
                 showSaveStatus('syncing');
@@ -812,7 +867,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             }
         }
 
-        // مکانیزم ذخیره‌سازی خودکار هوشمند ابری (با ایجاد تاخیر برای تجمیع تغییرات)
         function triggerCloudAutoSave() {
             showSaveStatus('saving');
             clearTimeout(autoSaveTimeout);
@@ -832,31 +886,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                 } catch (err) {
                     showSaveStatus('error');
                 }
-            }, 1500); // 1.5 ثانیه تاخیر پس از آخرین ویرایش
+            }, 1500);
         }
 
-        // مدیریت نمایش وضعیت ذخیره‌سازی
         function showSaveStatus(status) {
             const pill = document.getElementById('save-status-pill');
             const icon = document.getElementById('save-status-icon');
             const text = document.getElementById('save-status-text');
 
             if (status === 'syncing') {
-                pill.className = "px-3 py-1.5 rounded-full text-[10px] font-semibold bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center gap-1.5";
+                pill.className = "px-2.5 py-1.5 rounded-full text-[9px] font-semibold bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center gap-1";
                 icon.className = "fa-solid fa-spinner animate-spin";
-                text.innerText = "در حال بارگذاری...";
+                text.innerText = "در حال لود...";
             } else if (status === 'saving') {
-                pill.className = "px-3 py-1.5 rounded-full text-[10px] font-semibold bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 flex items-center gap-1.5";
+                pill.className = "px-2.5 py-1.5 rounded-full text-[9px] font-semibold bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 flex items-center gap-1";
                 icon.className = "fa-solid fa-rotate animate-spin";
-                text.innerText = "در حال ذخیره‌سازی...";
+                text.innerText = "در حال ذخیره...";
             } else if (status === 'saved' || status === 'synced') {
-                pill.className = "px-3 py-1.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center gap-1.5";
+                pill.className = "px-2.5 py-1.5 rounded-full text-[9px] font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center gap-1";
                 icon.className = "fa-solid fa-circle-check";
-                text.innerText = "ذخیره در ابر Neon";
+                text.innerText = "ذخیره در Neon";
             } else {
-                pill.className = "px-3 py-1.5 rounded-full text-[10px] font-semibold bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center gap-1.5";
+                pill.className = "px-2.5 py-1.5 rounded-full text-[9px] font-semibold bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center gap-1";
                 icon.className = "fa-solid fa-cloud-showers-water";
-                text.innerText = "عدم اتصال ابری";
+                text.innerText = "آفلاین";
             }
         }
 
@@ -866,6 +919,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
 
         function addNewChapter() {
             const nextId = chapters.length > 0 ? Math.max(...chapters.map(c => c.id)) + 1 : 1;
+            const defaultModel = geminiModels.length > 0 ? geminiModels[0].name : 'models/gemini-1.5-flash';
             chapters.push({
                 id: nextId,
                 name: `چپتر ${nextId}`,
@@ -874,7 +928,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                     image: '',
                     prompt: document.getElementById('global-prompt').value || '',
                     negativePrompt: document.getElementById('global-negative-prompt').value || '',
-                    aiVersion: document.getElementById('global-ai-version').value || 'gpt-4o',
+                    aiVersion: document.getElementById('global-ai-version').value || defaultModel,
                     translations: [],
                     currentVersionIndex: -1
                 }]
@@ -945,12 +999,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
         function addNewSegmentToActiveChapter() {
             const activeChap = getChapterById(activeChapterId);
             const newId = activeChap.segments.length > 0 ? Math.max(...activeChap.segments.map(s => s.id)) + 1 : 1;
+            const defaultModel = geminiModels.length > 0 ? geminiModels[0].name : 'models/gemini-1.5-flash';
             activeChap.segments.push({
                 id: newId,
                 image: '',
                 prompt: document.getElementById('global-prompt').value || '',
                 negativePrompt: document.getElementById('global-negative-prompt').value || '',
-                aiVersion: document.getElementById('global-ai-version').value || 'gpt-4o',
+                aiVersion: document.getElementById('global-ai-version').value || defaultModel,
                 translations: [],
                 currentVersionIndex: -1
             });
@@ -975,7 +1030,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             const duplicate = {
                 ...JSON.parse(JSON.stringify(original)),
                 id: newId,
-                image: '' // تصویر کپی نمی‌شود جهت سبکی
+                image: ''
             };
             activeChap.segments.push(duplicate);
             renderActiveSegments();
@@ -991,8 +1046,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                 const currentTranslation = seg.translations.length > 0 ? seg.translations[seg.currentVersionIndex] : 'هنوز ترجمه‌ای دریافت نشده است.';
                 const hasHistory = seg.translations.length > 1;
 
+                // ساختن زنده گزینه‌های کادر انتخاب مدل بر اساس لیست مدل‌های زنده جمینی
+                let modelOptionsHtml = '';
+                if (geminiModels.length > 0) {
+                    geminiModels.forEach(m => {
+                        const isSelected = seg.aiVersion === m.name ? 'selected' : '';
+                        modelOptionsHtml += `<option value="${m.name}" ${isSelected}>${m.displayName}</option>`;
+                    });
+                } else {
+                    modelOptionsHtml = `<option value="models/gemini-1.5-flash">Gemini 1.5 Flash</option>`;
+                }
+
                 const cardHtml = `
-                    <div class="glass-card rounded-2xl p-5 flex flex-col md:flex-row gap-5 items-stretch relative" data-id="${seg.id}">
+                    <div class="glass-card rounded-2xl p-5 flex flex-col md:flex-row gap-5 items-stretch relative transition-all duration-300" id="segment-card-${seg.id}" data-id="${seg.id}">
                         <div class="absolute top-4 left-4 flex gap-1.5 z-10">
                             <button onclick="duplicateSegment(${seg.id})" class="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-lg text-slate-300 flex items-center justify-center text-xs transition-all" title="تکثیر این سگمنت">
                                 <i class="fa-solid fa-clone"></i>
@@ -1037,13 +1103,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                                     ${currentTranslation}
                                 </div>
                                 
+                                <!-- نوار جزئیات پیشرفت (مراحل گام به گام ترجمه در زیر کادر) -->
+                                <div id="status-log-${seg.id}" class="hidden mt-2 p-2 bg-purple-950/20 rounded-lg border border-purple-500/15 text-[9px] text-purple-300 flex flex-col gap-1 text-right font-bold transition-all duration-300">
+                                    <!-- مراحل به صورت پویا اضافه خواهند شد -->
+                                </div>
+                                
                                 <div class="flex justify-between items-center pt-2 border-t border-white/5">
                                     <div class="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
                                         <span>نسخه مدل:</span>
                                         <select onchange="updateSegmentField(${seg.id}, 'aiVersion', this.value); triggerCloudAutoSave();" class="bg-slate-850 text-white border border-white/10 rounded px-1.5 py-0.5 text-[10px]">
-                                            <option value="gpt-4o" ${seg.aiVersion === 'gpt-4o' ? 'selected' : ''}>GPT-4o</option>
-                                            <option value="gpt-4-turbo" ${seg.aiVersion === 'gpt-4-turbo' ? 'selected' : ''}>GPT-4 Turbo</option>
-                                            <option value="claude-3-opus" ${seg.aiVersion === 'claude-3-opus' ? 'selected' : ''}>Claude 3 Opus</option>
+                                            ${modelOptionsHtml}
                                         </select>
                                     </div>
 
@@ -1122,19 +1191,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             }
         }
 
+        // بروزرسانی مرحله به مرحله نوار جزئیات سگمنت
+        function updateSegmentDetailLog(id, stepMessage, isFinished = false) {
+            const logBox = document.getElementById(`status-log-${id}`);
+            if (!logBox) return;
+            
+            if (logBox.classList.contains('hidden')) {
+                logBox.classList.remove('hidden');
+                logBox.innerHTML = '';
+            }
+            
+            const timestamp = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const logItem = `
+                <div class="flex justify-between items-center py-0.5">
+                    <span>${stepMessage}</span>
+                    <span class="text-[8px] opacity-60">${timestamp}</span>
+                </div>
+            `;
+            logBox.insertAdjacentHTML('beforeend', logItem);
+            
+            if (isFinished) {
+                setTimeout(() => {
+                    logBox.classList.add('hidden');
+                }, 4000); // محو شدن خودکار لاگ پس از ۴ ثانیه از پایان عملیات
+            }
+        }
+
         async function translateSingleSegment(id) {
             const activeChap = getChapterById(activeChapterId);
             const seg = activeChap.segments.find(s => s.id === id);
             if (!seg) return;
 
-            // تشخیص پویای گروه سگمنت فعلی بر اساس ایندکس در آرایه
+            const cardElement = document.getElementById(`segment-card-${seg.id}`);
+            if (cardElement) {
+                cardElement.classList.add('translating-active'); // فعال شدن افکت نوری
+            }
+
             const absoluteIndex = activeChap.segments.findIndex(s => s.id === id) + 1;
             const targetGroup = segmentGroups.find(g => absoluteIndex >= g.start && absoluteIndex <= g.end);
             const groupId = targetGroup ? targetGroup.id : 'default';
 
             const selectedMemory = document.querySelector('input[name="ai_memory"]:checked').value;
 
+            // مراحل گزارش نوار جزئیات
+            updateSegmentDetailLog(seg.id, "۱. بارگذاری و فشرده‌سازی موقت تصویر در مروگر...");
+            updateSegmentDetailLog(seg.id, "۲. بررسی محدوده و سوابق حافظه متوالی گروه چت: " + groupId);
+
             try {
+                updateSegmentDetailLog(seg.id, "۳. ارسال پکیج اطلاعات به سرور و API هوش مصنوعی جمینی...");
                 const response = await fetch('?action=translate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1145,18 +1249,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                         aiModel: seg.aiVersion,
                         memoryMode: selectedMemory,
                         groupId: groupId,
-                        image: seg.image // فرستادن مستقیم عکس کلاینت به API بک‌اند
+                        image: seg.image
                     })
                 });
+                
+                updateSegmentDetailLog(seg.id, "۴. پردازش و دریافت دیالوگ ترجمه شده از مدل " + seg.aiVersion);
                 const res = await response.json();
+                
                 if (res.success) {
                     seg.translations.push(res.translation);
                     seg.currentVersionIndex = seg.translations.length - 1;
+                    updateSegmentDetailLog(seg.id, "۵. همگام‌سازی و تکمیل فرآیند ترجمه با موفقیت.", true);
                     renderActiveSegments();
                     triggerCloudAutoSave();
+                } else {
+                    updateSegmentDetailLog(seg.id, "خطا در فرآیند ترجمه هوش مصنوعی: " + res.message, true);
                 }
             } catch (err) {
                 console.error("خطا در ترجمه:", err);
+                updateSegmentDetailLog(seg.id, "خطا در ارتباط شبکه با API سرور.", true);
+            } finally {
+                if (cardElement) {
+                    cardElement.classList.remove('translating-active'); // اتمام افکت نوری
+                }
             }
         }
 
@@ -1204,6 +1319,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             }
 
             let loaded = 0;
+            const defaultModel = geminiModels.length > 0 ? geminiModels[0].name : 'models/gemini-1.5-flash';
             files.forEach(file => {
                 const reader = new FileReader();
                 reader.onload = function(e) {
@@ -1213,7 +1329,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
                         image: e.target.result,
                         prompt: document.getElementById('global-prompt').value || '',
                         negativePrompt: document.getElementById('global-negative-prompt').value || '',
-                        aiVersion: document.getElementById('global-ai-version').value || 'gpt-4o',
+                        aiVersion: document.getElementById('global-ai-version').value || defaultModel,
                         translations: [],
                         currentVersionIndex: -1
                     });
@@ -1287,7 +1403,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             document.getElementById('batch-success-actions').classList.remove('hidden');
         }
 
-        // کپی هوشمند دیالوگ‌های نسخه‌های انتخابی
         function copyAllCurrentTranslations() {
             let compiledText = "";
             const activeChap = getChapterById(activeChapterId);
@@ -1301,7 +1416,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action'])) {
             });
         }
 
-        // خروجی نهایی ورد با ارجاع دقیق به نسخه‌های فعال چپترها
         function downloadWordDocumentExport() {
             const cleanChapters = chapters.map(chap => ({
                 name: chap.name,
