@@ -12,8 +12,8 @@ RUN a2enmod rewrite
 # کپی کردن تمام فایل‌های پوشه جاری به پوشه اصلی سرور وب
 COPY . /var/www/html/
 
-# تعیین دسترسی‌های لازم برای اجرای فایل‌ها در آپاچی
-RUN chown -y -R www-data:www-data /var/www/html
+# تعیین دسترسی‌های لازم برای اجرای فایل‌ها در آپاچی (بدون کاراکتر اضافه -y)
+RUN chown -R www-data:www-data /var/www/html
 
 # باز کردن پورت ۸۰ برای هدایت ترافیک وب به سرور رندر
 EXPOSE 80
