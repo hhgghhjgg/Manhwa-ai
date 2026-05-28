@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/salary_system.php
- * Role: Financial calculations, Payout Processor & Lazy Monthly Reset
+ * Role: Financial calculations, Payout Processor, Lazy Monthly Reset & Activity Monitor
  */
 
 // اطمینان از صحت کانتکست لود شده در index.php و child/router.php
@@ -12,32 +12,34 @@ if (!isset($botContext) || !isset($tg) || !isset($db)) {
 
 $botId = $botContext['bot_id'];
 
-// برای پردازش کالبک‌کوئری‌های حقوقی، اطلاعات شناسه و کالبک را استخراج می‌کنیم
+// استخراج اطلاعات کالبک‌کوئری جهت اینترسپت مستقیم دکمه‌های تایید و رد چپتر
 $callbackQuery = $botContext['update']['callback_query'] ?? null;
 
 // ==========================================
-// فاز ۱: سیستم ریست ماهانه هوشمند و تنبل (Lazy Monthly Reset)
-// این سیستم تضمین می‌کند بدون نیاز به کرون‌جاب، در ابتدای هر ماه آمار ماهانه اعضا صفر شود.
+// ۱. سیستم ریست ماهانه هوشمند و تنبل (Lazy Monthly Reset)
 // ==========================================
 if (!function_exists('lazyMonthlyReset')) {
+    /**
+     * بررسی خودکار تاریخ و صفر کردن آمارهای ماهانه اعضا در صورت ورود به ماه جدید
+     */
     function lazyMonthlyReset($db, $botId) {
-        $currentMonth = date('Y-m'); // خروجی به شکل: 2026-05
+        $currentMonth = date('Y-m'); // به صورت فرمت YYYY-MM
 
-        // دریافت تاریخ آخرین ریست ماهانه از جدول تنظیمات ربات جاری
+        // استعلام تاریخ آخرین ریست ثبت شده در تنظیمات
         $stmt = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'last_monthly_reset_date' LIMIT 1");
         $stmt->execute(['bot_id' => $botId]);
         $row = $stmt->fetch();
         $lastResetMonth = $row ? $row['value'] : '';
 
-        // اگر ماه جاری با ماه آخرین ریست متفاوت باشد، یعنی وارد ماه جدید شده‌ایم
+        // در صورت عدم تطابق تاریخ، فرآیند صفر کردن آمارهای ماهانه اجرا می‌شود
         if ($currentMonth !== $lastResetMonth) {
             $db->beginTransaction();
             try {
-                // ۱. صفر کردن چپترهای ماهانه تمام اعضا در این ربات
+                // صفر کردن فیلد آمارهای ماه جاری برای تمامی کاربران تایید شده این ربات
                 $stmtReset = $db->prepare("UPDATE users SET monthly_chapters = 0 WHERE bot_id = :bot_id");
-                $stmtReset = $stmtReset->execute(['bot_id' => $botId]);
+                $stmtReset->execute(['bot_id' => $botId]);
 
-                // ۲. به‌روزرسانی تاریخ آخرین ریست به ماه جاری در دیتابیس نئون
+                // ذخیره تاریخ جدید به عنوان آخرین ریست موفق
                 $stmtUpdateSetting = $db->prepare("
                     INSERT INTO settings (bot_id, key, value) 
                     VALUES (:bot_id, 'last_monthly_reset_date', :value)
@@ -58,28 +60,89 @@ if (!function_exists('lazyMonthlyReset')) {
     }
 }
 
-// اجرای ریست ماهانه هوشمند و تنبل با لود شدن هاب مالی
+// ==========================================
+// ۲. سیستم پایش هوشمند مانهواهای راکد (Lazy Activity Monitoring)
+// ==========================================
+if (!function_exists('checkInactiveManhwas')) {
+    /**
+     * پایش مانهواهای ثبت شده و ارسال هشدار خودکار به گروه‌ها در صورت راکد ماندن پروژه
+     */
+    function checkInactiveManhwas($db, $tg, $botId) {
+        // واکشی مانهواهایی که از آخرین فعالیت کاربری آن‌ها بیش از روزهای مجاز گذشته است
+        // نرخ پیش‌فرض روزهای مجاز راکد ماندن در صورت عدم وجود تنظیمات روی ۷ روز است
+        $stmtInactive = $db->prepare("
+            SELECT m.id, m.title, m.group_id, m.last_active_at,
+                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - m.last_active_at)) as inactive_days
+            FROM manhwas m
+            WHERE m.bot_id = :bot_id 
+              AND m.group_id IS NOT NULL
+              AND m.last_active_at < CURRENT_TIMESTAMP - (COALESCE(
+                  (SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'inactivity_warning_days' LIMIT 1), '7'
+              )::integer * INTERVAL '1 day')
+              AND (m.last_warning_sent_at IS NULL OR m.last_warning_sent_at < CURRENT_TIMESTAMP - INTERVAL '1 day')
+        ");
+        $stmtInactive->execute(['bot_id' => $botId]);
+        $inactiveManhwas = $stmtInactive->fetchAll();
+
+        if (empty($inactiveManhwas)) {
+            return;
+        }
+
+        // واکشی لیست تمامی ادمین‌ها و مالک این ربات جهت تگ کردن در پیام هشدار
+        $stmtAdmins = $db->prepare("
+            SELECT tg_id, full_name 
+            FROM users 
+            WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'
+        ");
+        $stmtAdmins->execute(['bot_id' => $botId]);
+        $admins = $stmtAdmins->fetchAll();
+
+        // ایجاد منشن‌های HTML با استفاده از آیدی عددی (بدون نیاز به داشتن یوزرنیم)
+        $mentions = "";
+        foreach ($admins as $ad) {
+            $mentions .= " <a href='tg://user?id={$ad['tg_id']}'>{$ad['full_name']}</a>";
+        }
+
+        foreach ($inactiveManhwas as $manhwa) {
+            $warningText = "🚨 <b>هشدار راکد ماندن پروژه مانهوا!</b>\n\n"
+                         . "📚 مانهوا: <b>«{$manhwa['title']}»</b>\n"
+                         . "⏳ مدت زمان بدون ثبت چپتر جدید: <code>" . (int)$manhwa['inactive_days'] . "</code> روز\n\n"
+                         . "⚠️ تیم زحمت‌کش متصل به این مانهوا در این مدت هیچ فایل چپتر یا پیشرفتی در گروه ثبت نکرده‌اند!\n\n"
+                         . "📢 توجه مدیران و ادمین‌های پروژه:{$mentions}\nلطفاً وضعیت پیشرفت کار را به صورت فوری پیگیری فرمایید.";
+
+            // ارسال پیام اخطار به گروه اختصاصی مانهوا
+            $tg->sendMessage($manhwa['group_id'], $warningText);
+
+            // به‌روزرسانی فیلد تاریخ آخرین هشدار جهت جلوگیری از ارسال پیام‌های مکرر و اسپم در ۲۴ ساعت آینده
+            $stmtUpdateWarning = $db->prepare("UPDATE manhwas SET last_warning_sent_at = CURRENT_TIMESTAMP WHERE id = :id");
+            $stmtUpdateWarning->execute(['id' => $manhwa['id']]);
+        }
+    }
+}
+
+// اجرای مکانیزم ریست ماهانه و پایش تنبل مانهواها با بالا آمدن هسته مالی
 lazyMonthlyReset($db, $botId);
+checkInactiveManhwas($db, $tg, $botId);
 
 // ==========================================
-// فاز ۲: توابع تایید یا رد چپترهای ارسالی و پرداخت حقوق
+// ۳. توابع تایید یا رد چپترهای ارسالی و پرداخت حقوق
 // ==========================================
 
 if (!function_exists('processChapterApproval')) {
     /**
-     * تایید نهایی چپتر ارسالی، آپدیت آخرین چپتر مانهوا و واریز دستمزد به کیف پول اعضای متصل به پروژه
+     * تایید نهایی چپتر ارسالی، پرداخت حقوق به سهم اعضا و به‌روزرسانی رکوردهای فعالیت مانهوا
      */
     function processChapterApproval($db, $tg, $botId, $chapterId, $adminId) {
-        // ۱. واکشی اطلاعات چپتر در انتظار تایید
+        // واکشی مشخصات چپتر در انتظار تایید
         $stmtCh = $db->prepare("SELECT * FROM chapters WHERE bot_id = :bot_id AND id = :id AND status = 'pending' LIMIT 1");
         $stmtCh->execute(['bot_id' => $botId, 'id' => $chapterId]);
         $chapter = $stmtCh->fetch();
 
         if (!$chapter) {
-            return "⚠️ این چپتر قبلاً توسط ادمین‌های دیگر رد یا تایید شده است.";
+            return "⚠️ این چپتر قبلاً توسط ادمین‌های دیگر تایید یا رد شده است.";
         }
 
-        // ۲. واکشی عنوان و گروه تلگرامی متصل به مانهوای این چپتر
+        // واکشی مشخصات مانهوای مربوطه
         $stmtM = $db->prepare("SELECT title, group_id FROM manhwas WHERE bot_id = :bot_id AND id = :id LIMIT 1");
         $stmtM->execute(['bot_id' => $botId, 'id' => $chapter['manhwa_id']]);
         $manhwa = $stmtM->fetch();
@@ -88,14 +151,17 @@ if (!function_exists('processChapterApproval')) {
 
         $db->beginTransaction();
         try {
-            // ۳. آپدیت وضعیت چپتر به تایید شده
+            // ۱. تغییر وضعیت چپتر جاری به تایید شده
             $stmtUpdateStatus = $db->prepare("UPDATE chapters SET status = 'approved' WHERE bot_id = :bot_id AND id = :id");
             $stmtUpdateStatus->execute(['bot_id' => $botId, 'id' => $chapterId]);
 
-            // ۴. به‌روزرسانی شماره آخرین چپتر ثبت شده مانهوا
+            // ۲. به‌روزرسانی فیلد آخرین چپتر مانهوا (با متد GREATEST برای جلوگیری از تداخل ثبت چپترهای نامرتب)
+            // همچنین صفر کردن مجدد شمارنده‌ی راکد ماندن مانهوا
             $stmtUpdateManhwa = $db->prepare("
                 UPDATE manhwas 
-                SET last_chapter = GREATEST(last_chapter, :chapter_num) 
+                SET last_chapter = GREATEST(last_chapter, :chapter_num),
+                    last_active_at = CURRENT_TIMESTAMP,
+                    last_warning_sent_at = NULL
                 WHERE bot_id = :bot_id AND id = :id
             ");
             $stmtUpdateManhwa->execute([
@@ -104,7 +170,7 @@ if (!function_exists('processChapterApproval')) {
                 'id'          => $chapter['manhwa_id']
             ]);
 
-            // ۵. پرداخت سهم دستمزد اعضای تیم و ارتقای آمارهای کاری آنها در دیتابیس نئون
+            // ۳. تسویه حساب مالی و پرداخت سهم دستمزد اعضای متصل به این مانهوا
             $payouts = [
                 'translator' => ['id' => $chapter['translator_id'], 'pay' => (float)$chapter['translator_pay'], 'role_text' => 'مترجم'],
                 'cleaner'    => ['id' => $chapter['cleaner_id'],    'pay' => (float)$chapter['cleaner_pay'],    'role_text' => 'کلینر'],
@@ -113,7 +179,7 @@ if (!function_exists('processChapterApproval')) {
 
             foreach ($payouts as $p) {
                 if (!empty($p['id'])) {
-                    // واریز حقوق و اعمال چپتر انجام شده به کل آمارها و آمارهای ماه جاری
+                    // واریز به سهم کل، سهم ماه جاری و افزایش کل چپترهای کار شده فرد
                     $stmtUserUpdate = $db->prepare("
                         UPDATE users 
                         SET total_chapters = total_chapters + 1, 
@@ -127,24 +193,25 @@ if (!function_exists('processChapterApproval')) {
                         'tg_id'  => $p['id']
                     ]);
 
-                    // ارسال اعلان فیش حقوقی به پی‌وی هرکدام از اعضای تیم به طور اختصاصی
-                    $notifyText = "🎉 <b>حقوق چپتر جدید واریز شد!</b>\n\n"
+                    // ارسال فیش حقوقی دیجیتالی مستقیم به پی‌وی هرکدام از اعضای متصل به چپتر
+                    $notifyText = "🎉 <b>حقوق چپتر جدید به موجودی شما اضافه شد!</b>\n\n"
                                 . "📚 مانهوا: <b>«{$manhwaTitle}»</b>\n"
                                 . "🔢 شماره چپتر کار شده: <code>{$chapter['chapter_num']}</code>\n"
                                 . "⚔️ سمت شما: {$p['role_text']}\n"
                                 . "💰 سهم دستمزد واریز شده: <code>" . number_format($p['pay']) . "</code> تومان\n\n"
-                                . "💡 موجودی کیف پول و آمار پروژه‌های شما در ربات به‌روزرسانی شد. خسته نباشید اعضا! 💖";
+                                . "💡 آمار تراکنش‌ها و موجودی شما در ربات به‌روزرسانی شد. خسته نباشید اعضا! 💖";
                     $tg->sendMessage($p['id'], $notifyText);
                 }
             }
 
             $db->commit();
 
-            // ۶. ارسال پیام تبریک تایید چپتر و خسته نباشید به گروه تلگرامی رسمی مانهوا
+            // ۴. ارسال پیام اتمام کار در گروه رسمی تلگرامی مانهوا جهت اطلاع کل اعضای گروه
             if (!empty($groupId)) {
-                $groupText = "🔔 <b>اطلاعیه تایید چپتر جدید!</b>\n\n"
-                           . "🎉 چپتر <code>{$chapter['chapter_num']}</code> مانهوای <b>«{$manhwaTitle}»</b> توسط مدیریت کل بررسی و تایید نهایی شد و فایل کار شده ثبت گردید.\n\n"
-                           . "💸 حقوق اعضای تیم متصل به پروژه محاسبه و واریز شد. خسته نباشید به همه اعضای زحمت‌کش تیم! ✨";
+                $groupText = "🔔 <b>اطلاعیه تایید چپتر جدید مانهوا!</b>\n\n"
+                           . "🎉 چپتر <code>{$chapter['chapter_num']}</code> مانهوای <b>«{$manhwaTitle}»</b> توسط مدیریت بررسی و با موفقیت تایید نهایی گردید.\n\n"
+                           . "💸 حقوق اعضای تیم متصل به پروژه محاسبه و به حساب کاربری آنها در ربات واریز شد.\n"
+                           . "خسته نباشید و تشکر فراوان از مترجم، کلینر و تایپیست این اثر! ✨";
                 $tg->sendMessage($groupId, $groupText);
             }
 
@@ -152,14 +219,14 @@ if (!function_exists('processChapterApproval')) {
         } catch (Exception $e) {
             $db->rollBack();
             error_log("Error in processChapterApproval: " . $e->getMessage());
-            return "❌ خطای سیستمی در انجام تراکنش دیتابیس نئون.";
+            return "❌ خطای سیستمی در ثبت تراکنش دیتابیس نئون.";
         }
     }
 }
 
 if (!function_exists('processChapterRejection')) {
     /**
-     * رد کردن چپتر ارسالی به دلیل عدم کیفیت یا نیاز به اصلاح
+     * رد کردن چپتر ارسالی به دلیل عدم تایید کیفیت کار شده توسط ادمین
      */
     function processChapterRejection($db, $tg, $botId, $chapterId, $adminId) {
         $stmtCh = $db->prepare("SELECT * FROM chapters WHERE bot_id = :bot_id AND id = :id AND status = 'pending' LIMIT 1");
@@ -167,25 +234,24 @@ if (!function_exists('processChapterRejection')) {
         $chapter = $stmtCh->fetch();
 
         if (!$chapter) {
-            return "⚠️ این چپتر قبلاً رد یا تایید شده است.";
+            return "⚠️ این چپتر قبلاً تایید یا رد شده است.";
         }
 
-        // واکشی نام مانهوا جهت اطلاع‌رسانی
         $stmtM = $db->prepare("SELECT title FROM manhwas WHERE bot_id = :bot_id AND id = :id LIMIT 1");
         $stmtM->execute(['bot_id' => $botId, 'id' => $chapter['manhwa_id']]);
         $manhwa = $stmtM->fetch();
         $manhwaTitle = $manhwa ? $manhwa['title'] : 'پروژه نامشخص';
 
-        // آپدیت وضعیت چپتر در دیتابیس به رد شده
+        // آپدیت وضعیت چپتر جاری به حالت رد شده
         $stmtUpdate = $db->prepare("UPDATE chapters SET status = 'rejected' WHERE bot_id = :bot_id AND id = :id");
         $stmtUpdate->execute(['bot_id' => $botId, 'id' => $chapterId]);
 
-        // اطلاع‌رسانی به تایپیست (فرستنده چپتر) جهت بازنگری و ویرایش کار
+        // ارسال فیش خطای عدم کیفیت کار به پی‌وی تایپیست مانهوا جهت انجام ویرایش
         if (!empty($chapter['typesetter_id'])) {
-            $rejectText = "❌ <b>چپتر شما مورد تایید قرار نگرفت!</b>\n\n"
+            $rejectText = "❌ <b>چپتر کار شده شما تایید نشد!</b>\n\n"
                         . "📚 مانهوا: <b>«{$manhwaTitle}»</b>\n"
                         . "🔢 شماره چپتر: <code>{$chapter['chapter_num']}</code>\n\n"
-                        . "⚠️ فایل چپتر فرستاده شده توسط ادمین‌های مانهوا رد شد. لطفاً اصلاحات و ویرایش‌های لازم را انجام داده و کار اصلاح‌شده را مجدداً از داخل گروه ارسال فرمایید.";
+                        . "⚠️ فایل کار شده شما متاسفانه مورد تایید ادمین‌های مانهوا قرار نگرفت. لطفاً اصلاحات و ویرایش‌های لازم را انجام داده و کار اصلاح‌شده را مجدداً ارسال فرمایید.";
             $tg->sendMessage($chapter['typesetter_id'], $rejectText);
         }
 
@@ -194,8 +260,7 @@ if (!function_exists('processChapterRejection')) {
 }
 
 // ==========================================
-// فاز ۳: پردازش و اینترسپت مستقیم کالبک‌کوئری‌های حقوقی
-// از آنجا که ادمین دکمه تایید یا رد را در پی‌وی خود فشار می‌دهد، این بخش بلافاصله کدهای کلیک را اجرا می‌کند.
+// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین در چت شخصی
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -203,7 +268,7 @@ if ($callbackQuery) {
     $messageId    = $callbackQuery['message']['message_id'];
     $adminChatId  = $callbackQuery['message']['chat']['id'];
 
-    // الف) کلیک ادمین روی دکمه تایید چپتر و پرداخت دستمزد
+    // الف) پردازش دکمه تایید چپتر و پرداخت حقوق
     if (strpos($callbackData, 'admin_approve_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $chapterId = (int)str_replace('admin_approve_ch_', '', $callbackData);
@@ -211,14 +276,14 @@ if ($callbackQuery) {
         $result = processChapterApproval($db, $tg, $botId, $chapterId, $adminChatId);
 
         if ($result === true) {
-            $tg->editMessageText($adminChatId, $messageId, "✅ <b>چپتر با موفقیت تایید شد!</b>\n\nمبالغ دستمزد به کیف پول اعضا واریز گردید و آمار مانهوا به‌روزرسانی شد.");
+            $tg->editMessageText($adminChatId, $messageId, "✅ <b>چپتر تایید شد!</b>\n\nدستمزدها و کیف پول اعضا آپدیت گردید و فیش‌های گزارش کار برای مترجم، کلینر و تایپیست ارسال شد.");
         } else {
             $tg->sendMessage($adminChatId, $result);
         }
         exit;
     }
 
-    // ب) کلیک ادمین روی دکمه رد چپتر
+    // ب) پردازش دکمه رد چپتر
     elseif (strpos($callbackData, 'admin_reject_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $chapterId = (int)str_replace('admin_reject_ch_', '', $callbackData);
@@ -226,7 +291,7 @@ if ($callbackQuery) {
         $result = processChapterRejection($db, $tg, $botId, $chapterId, $adminChatId);
 
         if ($result === true) {
-            $tg->editMessageText($adminChatId, $messageId, "❌ <b>چپتر توسط شما رد شد.</b>\n\nکاربر فرستنده چپتر با فیش اعلان مطلع شد تا اصلاحات لازم را انجام دهد.");
+            $tg->editMessageText($adminChatId, $messageId, "❌ <b>چپتر ارسالی رد شد.</b>\n\nفایل اعلان خطا و ویرایش کار برای کاربر فرستاده شد.");
         } else {
             $tg->sendMessage($adminChatId, $result);
         }
