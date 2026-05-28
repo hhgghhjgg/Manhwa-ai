@@ -8,18 +8,18 @@
 require_once __DIR__ . '/config.php';
 
 class DB {
-    // نگه‌داری نمونه اتصال فعال (الگوی Singleton) جهت بهینه‌سازی منابع
+    // نگه‌داری نمونه اتصال فعال (الگوی Singleton) جهت بهینه‌سازی منابع دیتابیس
     private static $instance = null;
 
     /**
-     * اتصال به دیتابیس PostgreSQL نئون
+     * برقراری اتصال امن به دیتابیس PostgreSQL نئون
      * 
      * @return PDO
      * @throws Exception
      */
     public static function connect() {
         if (self::$instance === null) {
-            // اطمینان از تعریف شدن آدرس اتصال دیتابیس در فایل تنظیمات
+            // اطمینان از تعریف شدن آدرس اتصال دیتابیس در فایل تنظیمات اصلی
             if (!defined('DB_DSN_URL') || empty(DB_DSN_URL)) {
                 throw new Exception("Database URL is not defined in core/config.php.");
             }
@@ -38,26 +38,27 @@ class DB {
                 $pass   = $dbopts['pass'] ?? '';
                 $dbname = isset($dbopts['path']) ? ltrim($dbopts['path'], '/') : '';
 
-                // ساخت رشته‌ی DSN منطبق با پی‌اچ‌پی و ملزم کردن اتصال امن SSL (مورد نیاز Neon Tech)
+                // ساخت رشته‌ی DSN با ملزم کردن اتصال امن SSL (مورد نیاز Neon Tech)
                 $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode=require";
 
-                // برقراری اتصال با اعمال تنظیمات بهینه امنیتی و کارایی
+                // برقراری اتصال بهینه به دیتابیس نئون
                 self::$instance = new PDO($dsn, $user, $pass, [
-                    // فعال کردن نمایش دقیق تمام خطاهای دیتابیس جهت مانیتورینگ بهتر در رندر
+                    // فعال کردن نمایش دقیق تمام خطاهای دیتابیس جهت مانیتورینگ بهتر در پنل رندر
                     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                     
-                    // تنظیم نحوه بازگشت داده‌ها به شکل آرایه‌های انجمنی (آسان کردن دسترسی به فیلدها)
+                    // تنظیم نحوه بازگشت داده‌ها به شکل آرایه‌های انجمنی برای دسترسی ساده به ستون‌ها
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     
-                    // غیرفعال کردن اجرای شبیه‌سازی‌شده کوئری‌ها جهت افزایش امنیت در مقابل حملات SQL Injection
-                    PDO::ATTR_EMULATE_PREPARES   => false,
+                    // شبیه‌سازی کلاینتی آماده‌سازی دستورات جهت دور زدن کش سروری PgBouncer دیتابیس نئون
+                    // این خط به طور کامل مشکل خطای "cached plan must not change result type" را برطرف می‌کند
+                    PDO::ATTR_EMULATE_PREPARES   => true, 
                     
-                    // غیرفعال کردن اتصالات پایا؛ در پلتفرم‌های سرورلس اتصالات باید فوراً باز و بسته شوند
+                    // غیرفعال کردن اتصالات پایا؛ در پلتفرم‌های سرورلس اتصالات باید فوراً پس از پایان اسکریپت بسته شوند
                     PDO::ATTR_PERSISTENT         => false
                 ]);
 
             } catch (PDOException $e) {
-                // ثبت دلیل عدم اتصال به دیتابیس در بخش مانیتورینگ سرور
+                // ثبت دقیق دلیل عدم اتصال به دیتابیس در بخش مانیتورینگ سرور رندر
                 error_log("PostgreSQL Database Connection Failure: " . $e->getMessage());
                 throw new Exception("Connection to Neon database failed: " . $e->getMessage());
             }
@@ -67,7 +68,7 @@ class DB {
     }
 
     /**
-     * متد بستن و آزادسازی دستی اتصال دیتابیس در صورت نیاز
+     * متد بستن و آزادسازی دستی اتصال دیتابیس
      */
     public static function close() {
         self::$instance = null;
