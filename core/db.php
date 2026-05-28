@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: core/db.php
- * Role: Optimized Neon PostgreSQL (PDO) Database Connection Handler
+ * Role: Optimized Neon PostgreSQL (PDO) Database Connection Handler with Self-Healing Migrations
  */
 
 require_once __DIR__ . '/config.php';
@@ -56,6 +56,25 @@ class DB {
                     // غیرفعال کردن اتصالات پایا؛ در پلتفرم‌های سرورلس اتصالات باید فوراً پس از پایان اسکریپت بسته شوند
                     PDO::ATTR_PERSISTENT         => false
                 ]);
+
+                // اجرای خودکار هماهنگ‌سازی و ثبت ستون‌ها و جدول‌های جدید (Database Migration)
+                // این بخش برای جلوگیری از ارورهای مربوط به نبود ستون‌های مالی و تیکت‌ها به صورت هوشمند عمل می‌کند
+                self::$instance->exec("
+                    ALTER TABLE chapters ADD COLUMN IF NOT EXISTS translator_pay NUMERIC(15, 2) DEFAULT 0;
+                    ALTER TABLE chapters ADD COLUMN IF NOT EXISTS cleaner_pay NUMERIC(15, 2) DEFAULT 0;
+                    ALTER TABLE chapters ADD COLUMN IF NOT EXISTS typesetter_pay NUMERIC(15, 2) DEFAULT 0;
+                    ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_translator NUMERIC(15, 2) DEFAULT NULL;
+                    ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_cleaner NUMERIC(15, 2) DEFAULT NULL;
+                    ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_typesetter NUMERIC(15, 2) DEFAULT NULL;
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS warnings INT DEFAULT 0;
+                    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'open';
+                    CREATE TABLE IF NOT EXISTS group_rules (
+                        bot_id INT NOT NULL,
+                        group_id BIGINT NOT NULL,
+                        rules TEXT,
+                        PRIMARY KEY (bot_id, group_id)
+                    );
+                ");
 
             } catch (PDOException $e) {
                 // ثبت دقیق دلیل عدم اتصال به دیتابیس در بخش مانیتورینگ سرور رندر
