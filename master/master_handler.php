@@ -2,11 +2,11 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: master/master_handler.php
- * Role: Master Bot Processor (Bot Creator Engine)
+ * Role: Master Bot Processor with Advanced Real-time Owner Statistics
  */
 
-// اطمینان از دسترسی به اطلاعات زمینه ربات مادر
-if (!isset($botContext) || !$botContext['is_master']) {
+// اطمینان از صحت دسترسی به کانتکست ربات مادر
+if (!isset($botContext) || !isnull($botContext) || !$botContext['is_master']) {
     exit;
 }
 
@@ -31,6 +31,9 @@ if (!$userId) exit;
 $user = FSM::initUser(0, $userId, $username, $fullName);
 $step = $user['step'] ?? 'idle';
 
+// بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل هلدینگ است یا خیر
+$isSystemOwner = ($userId === OWNER_ID);
+
 // ۲. پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -39,21 +42,42 @@ if ($callbackQuery) {
 
     $tg->answerCallbackQuery($callbackId);
 
-    // دکمه درخواست ساخت ربات جدید
-    if ($callbackData === 'master_new_bot') {
-        FSM::setStep(0, $userId, 'waiting_for_token');
+    // دکمه لغو و بازگشت به منوی اصلی ربات‌ساز
+    if ($callbackData === 'master_cancel') {
+        FSM::clearStep(0, $userId);
         
+        $keyboard = [];
+        $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+        $keyboard[] = [
+            ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+            ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
+        ];
+
+        // نمایش دکمه‌های اختصاصی مالک کل سیستم
+        if ($isSystemOwner) {
+            $keyboard[] = [
+                ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
+                ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
+            ];
+        }
+        
+        $tg->sendMessage($userId, "🤖 به منوی اصلی ربات‌ساز خوش آمدید. گزینه مورد نظر خود را انتخاب کنید:", ['inline_keyboard' => $keyboard]);
+        exit;
+    }
+
+    // کالبک ساخت ربات جدید
+    elseif ($callbackData === 'master_new_bot') {
+        FSM::setStep(0, $userId, 'waiting_for_token');
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '❌ لغو عملیات', 'callback_data' => 'master_cancel']]
             ]
         ];
-        
-        $tg->sendMessage($userId, "📥 <b>لطفاً توکن ربات مانهوای خود را ارسال کنید:</b>\n\nبرای این کار ابتدا به آیدی @BotFather در تلگرام رفته، ربات جدید بسازید و توکنی که به شما می‌دهد (که شبیه به متن زیر است) را کپی کرده و برای من بفرستید:\n\n<code>123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ</code>", $keyboard);
+        $tg->sendMessage($userId, "📥 <b>لطفاً توکن ربات مانهوای خود را ارسال کنید:</b>\n\nبرای این کار ابتدا به آیدی @BotFather در تلگرام رفته، ربات جدید بسازید و توکنی که به شما می‌دهد را کپی کرده و برای من بفرستید:", $keyboard);
         exit;
     }
 
-    // دکمه نمایش لیست ربات‌های ساخته شده توسط کاربر جاری
+    // کالبک لیست ربات‌های کاربر جاری
     elseif ($callbackData === 'master_my_bots') {
         $stmt = $db->prepare("SELECT bot_name, token FROM bots WHERE owner_id = :owner_id ORDER BY id DESC");
         $stmt->execute(['owner_id' => $userId]);
@@ -75,7 +99,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // دکمه راهنمای ساخت ربات
+    // کالبک راهنمای ساخت ربات
     elseif ($callbackData === 'master_help') {
         $helpText = "❓ <b>راهنمای گام‌به‌گام ساخت ربات مدیریت مانهوا:</b>\n\n"
                   . "۱. وارد ربات @BotFather شوید.\n"
@@ -93,19 +117,136 @@ if ($callbackQuery) {
         exit;
     }
 
-    // دکمه لغو و بازگشت به منوی اصلی ربات‌ساز
-    elseif ($callbackData === 'master_cancel') {
-        FSM::clearStep(0, $userId);
+    // کالبک اختصاصی مالک: لیست کل ربات‌های ثبت شده در سیستم با لینک مستقیم ورود
+    elseif ($callbackData === 'master_owner_all_bots' && $isSystemOwner) {
+        $stmt = $db->prepare("SELECT bot_name, token, owner_id FROM bots WHERE id > 0 ORDER BY id DESC");
+        $stmt->execute();
+        $allBots = $stmt->fetchAll();
+
+        if (empty($allBots)) {
+            $tg->sendMessage($userId, "⚠️ هنوز هیچ رباتی در سیستم ثبت نشده است.");
+        } else {
+            $textBots = "🌐 <b>لیست کل ربات‌های ساخته شده در سرور مانهوا-آی‌آی:</b>\n\n";
+            $buttons = [];
+            foreach ($allBots as $bot) {
+                $cleanName = str_replace('@', '', $bot['bot_name']);
+                $textBots .= "🤖 <b>{$bot['bot_name']}</b>\n└ مالک مانهوا: <code>{$bot['owner_id']}</code>\n\n";
+                $buttons[] = [['text' => "🚀 ورود به {$bot['bot_name']}", 'url' => "https://t.me/{$cleanName}"]];
+            }
+            $buttons[] = [['text' => '🔙 بازگشت به منوی ادمین', 'callback_data' => 'master_cancel']];
+            
+            $tg->sendMessage($userId, $textBots, ['inline_keyboard' => $buttons]);
+        }
+        exit;
+    }
+
+    // کالبک اختصاصی مالک: مانیتورینگ زنده و نمایش ۲۲ شاخص آماری کل سرور به صورت تفکیک‌شده
+    elseif ($callbackData === 'master_owner_stats' && $isSystemOwner) {
         
+        // کوئری ۱: تحلیل کاربران کل ربات‌ها با روش تجمیع شرطی
+        $stmtUserStats = $db->prepare("
+            SELECT 
+                COUNT(DISTINCT tg_id) as total_users,
+                COUNT(DISTINCT CASE WHEN role = 'owner' THEN tg_id END) as total_owners,
+                COUNT(DISTINCT CASE WHEN role = 'admin' THEN tg_id END) as total_admins,
+                COUNT(DISTINCT CASE WHEN role = 'translator' AND status = 'approved' THEN tg_id END) as total_translators,
+                COUNT(DISTINCT CASE WHEN role = 'cleaner' AND status = 'approved' THEN tg_id END) as total_cleaners,
+                COUNT(DISTINCT CASE WHEN role = 'typesetter' AND status = 'approved' THEN tg_id END) as total_typesetters,
+                COUNT(CASE WHEN status = 'pending_test' THEN 1 END) as pending_recruits,
+                COALESCE(SUM(total_earned), 0) as total_earned_sum
+            FROM users 
+            WHERE bot_id > 0;
+        ");
+        $stmtUserStats->execute();
+        $uStats = $stmtUserStats->fetch();
+
+        // کوئری ۲: تحلیل مانهواهای ثبت شده
+        $stmtManhwaStats = $db->prepare("
+            SELECT 
+                COUNT(*) as total_manhwas,
+                COUNT(CASE WHEN group_id IS NOT NULL THEN 1 END) as connected_manhwas
+            FROM manhwas;
+        ");
+        $stmtManhwaStats->execute();
+        $mStats = $stmtManhwaStats->fetch();
+
+        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم
+        $stmtChapterStats = $db->prepare("
+            SELECT 
+                COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_chapters,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_chapters,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN translator_pay END), 0) as pay_translators,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN cleaner_pay END), 0) as pay_cleaners,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN typesetter_pay END), 0) as pay_typesetters
+            FROM chapters;
+        ");
+        $stmtChapterStats->execute();
+        $cStats = $stmtChapterStats->fetch();
+
+        // کوئری ۴: تحلیل آماری آزمون‌های استخدامی داوطلبان
+        $stmtTestStats = $db->prepare("
+            SELECT 
+                COUNT(*) as total_tests,
+                COUNT(CASE WHEN status = 'accepted' THEN 1 END) as accepted_tests,
+                COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_tests
+            FROM submitted_tests;
+        ");
+        $stmtTestStats->execute();
+        $tStats = $stmtTestStats->fetch();
+
+        // کوئری ۵: تحلیل تیکت‌ها و آزمون‌های تمرینی عمومی
+        $stmtMiscStats = $db->prepare("
+            SELECT 
+                (SELECT COUNT(*) FROM tickets) as total_tickets,
+                (SELECT COUNT(*) FROM tickets WHERE status = 'open') as open_tickets,
+                (SELECT COUNT(*) FROM practice_exams) as total_exams,
+                (SELECT COUNT(*) FROM bots WHERE id > 0) as total_bots;
+        ");
+        $stmtMiscStats->execute();
+        $miscStats = $stmtMiscStats->fetch();
+
+        // محاسبه آمارهای ترکیبی
+        $totalPaidSum = (float)$cStats['pay_translators'] + (float)$cStats['pay_cleaners'] + (float)$cStats['pay_typesetters'];
+
+        // نگارش گزارش کامل آماری ۲۲ شاخص متمایز سیستم
+        $statsText = "📊 <b>گزارش آماری ۲۲ شاخص متمایز کل سرور (مخصوص مالک کل):</b>\n\n"
+                   . "🤖 <b>بخش ربات‌ها:</b>\n"
+                   . "└ ۱. کل ربات‌های فعال ثبت شده: <code>{$miscStats['total_bots']}</code> ربات\n\n"
+                   . "👥 <b>بخش کاربران و پرسنل تیمی:</b>\n"
+                   . "├ ۲. کل کاربران ثبت شده در ربات‌ها: <code>{$uStats['total_users']}</code> نفر\n"
+                   . "├ ۳. تعداد مالکین ربات‌های مانهوا: <code>{$uStats['total_owners']}</code> نفر\n"
+                   . "├ ۴. تعداد کل ادمین‌های منتسب شده: <code>{$uStats['total_admins']}</code> نفر\n"
+                   . "├ ۵. مترجمین فعال تایید شده: <code>{$uStats['total_translators']}</code> نفر\n"
+                   . "├ ۶. کلینرهای فعال تایید شده: <code>{$uStats['total_cleaners']}</code> نفر\n"
+                   . "├ ۷. تایپیست‌های فعال تایید شده: <code>{$uStats['total_typesetters']}</code> نفر\n"
+                   . "└ ۸. کاندیداهای در انتظار بررسی استخدام: <code>{$uStats['pending_recruits']}</code> نفر\n\n"
+                   . "📚 <b>بخش مانهواها و پروژه‌ها:</b>\n"
+                   . "├ ۹. کل پروژه‌های مانهوای ثبت شده: <code>{$mStats['total_manhwas']}</code> عدد\n"
+                   . "└ ۱۰. مانهواهای فعال متصل به گروه کار: <code>{$mStats['connected_manhwas']}</code> عدد\n\n"
+                   . "🔢 <b>بخش چپترها و ارسال کارها:</b>\n"
+                   . "├ ۱۱. کل چپترهای تایید و ثبت شده: <code>{$cStats['approved_chapters']}</code> چپتر\n"
+                   . "└ ۱۲. چپترهای در انتظار تایید مدیریت: <code>{$cStats['pending_chapters']}</code> چپتر\n\n"
+                   . "💸 <b>بخش محاسبات مالی و حقوق‌ها:</b>\n"
+                   . "├ ۱۳. کل حقوق توزیع شده پرسنل: <code>" . number_format($totalPaidSum) . "</code> تومان\n"
+                   . "├ ۱۴. مجموع کیف پول فعلی اعضا: <code>" . number_format($uStats['total_earned_sum']) . "</code> تومان\n"
+                   . "├ ۱۵. سهم پرداختی به مترجمین: <code>" . number_format($cStats['pay_translators']) . "</code> تومان\n"
+                   . "├ ۱۶. سهم پرداختی به کلینرها: <code>" . number_format($cStats['pay_cleaners']) . "</code> تومان\n"
+                   . "└ ۱۷. سهم پرداختی به تایپیست‌ها: <code>" . number_format($cStats['pay_typesetters']) . "</code> تومان\n\n"
+                   . "📂 <b>بخش سنجش، آزمون‌ها و تیکت‌ها:</b>\n"
+                   . "├ ۱۸. مجموع تست‌های استخدامی ثبت شده: <code>{$tStats['total_tests']}</code> تست\n"
+                   . "├ ۱۹. تست‌های استخدامی پذیرفته‌شده: <code>{$tStats['accepted_tests']}</code> مورد\n"
+                   . "├ ۲۰. تست‌های استخدامی رد شده: <code>{$tStats['rejected_tests']}</code> مورد\n"
+                   . "├ ۲۱. کل تیکت‌های پشتیبانی باز شده: <code>{$miscStats['total_tickets']}</code> تیکت\n"
+                   . "├ ۲۲. تیکت‌های باز در انتظار پاسخ: <code>{$miscStats['open_tickets']}</code> تیکت\n"
+                   . "└ ۲۳. کل آزمون‌های تمرینی ثبت شده: <code>{$miscStats['total_exams']}</code> آزمون\n\n"
+                   . "🕒 <i>این گزارش بر اساس آخرین تراکنش‌های دیتابیس نئون به صورت زنده تولید شده است.</i>";
+
         $keyboard = [
             'inline_keyboard' => [
-                [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']],
-                [['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots']],
-                [['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']]
+                [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'master_cancel']]
             ]
         ];
-        
-        $tg->sendMessage($userId, "🤖 به منوی اصلی ربات‌ساز خوش آمدید. گزینه مورد نظر خود را انتخاب کنید:", $keyboard);
+        $tg->sendMessage($userId, $statsText, $keyboard);
         exit;
     }
 }
@@ -116,12 +257,11 @@ if (!empty($text)) {
     if ($text === '/start') {
         FSM::clearStep(0, $userId);
 
-        $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']],
-                [['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots']],
-                [['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']]
-            ]
+        $keyboard = [];
+        $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+        $keyboard[] = [
+            ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+            ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
         ];
 
         $welcome = "سلام <b>{$fullName}</b> گرامی!\n"
@@ -129,37 +269,28 @@ if (!empty($text)) {
                  . "با این سیستم می‌توانید ربات پیشرفته اختصاصی خود را جهت مدیریت مانهوا، ترجمه، تایپ، کلینرها، محاسبه حقوق و سازماندهی کارهای تیم خود بسازید.\n\n"
                  . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
-        // اگر کاربر استارت کننده، مالک کل سیستم باشد، پنل آمار کل را نیز نشان می‌دهیم
-        if ($userId === OWNER_ID) {
-            $stmtCount = $db->prepare("SELECT COUNT(*) as total_bots FROM bots");
-            $stmtCount->execute();
-            $totalBots = $stmtCount->fetch()['total_bots'];
-
-            $stmtCountUsers = $db->prepare("SELECT COUNT(DISTINCT tg_id) as total_users FROM users WHERE bot_id > 0");
-            $stmtCountUsers->execute();
-            $totalUsers = $stmtCountUsers->fetch()['total_users'];
-
-            $welcome .= "\n\n📊 <b>آمار کل سرور (مخصوص مالک اصلی ربات‌ساز):</b>\n"
-                      . "└ تعداد کل ربات‌های ساخته شده: <code>{$totalBots}</code> ربات\n"
-                      . "└ تعداد کل اعضای ثبت‌شده در ربات‌ها: <code>{$totalUsers}</code> نفر";
+        // نمایش گزینه‌های مانیتورینگ پیشرفته برای مالک کل سیستم
+        if ($isSystemOwner) {
+            $keyboard[] = [
+                ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
+                ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
+            ];
+            $welcome .= "\n\n🛡️ <b>شما به عنوان مالک اصلی سیستم شناسایی شدید. پنل مانیتورینگ زنده کل سرور برای شما فعال است.</b>";
         }
 
-        $tg->sendMessage($userId, $welcome, $keyboard);
+        $tg->sendMessage($userId, $welcome, ['inline_keyboard' => $keyboard]);
         exit;
     }
 
     // اگر کاربر در حال ارسال توکن ربات مانهوا باشد
     if ($step === 'waiting_for_token') {
-        // حذف فاصله‌های اضافی احتمالی از ابتدا و انتهای توکن
         $tokenInput = trim($text);
 
-        // بررسی اینکه توکن فرمت اولیه مناسبی دارد یا خیر
         if (!preg_match('/^[0-9]+:[a-zA-Z0-9_-]+$/', $tokenInput)) {
             $tg->sendMessage($userId, "❌ فرمت توکن ارسال شده نامعتبر است. لطفاً توکن معتبر ارسال کنید یا دکمه لغو را فشار دهید.");
             exit;
         }
 
-        // استعلام صحت توکن از API تلگرام با کلاس موقت تلگرام
         $tempTg = new Telegram($tokenInput);
         $meResult = $tempTg->getMe();
 
@@ -167,21 +298,18 @@ if (!empty($text)) {
             $botUsername = $meResult['result']['username'];
             $botName     = $meResult['result']['first_name'];
 
-            // تشخیص پویای دامنه فعال سرور روی رندر جهت ست کردن وب‌هوک
+            // تشخیص پویای دامنه رندر جهت ست کردن وب‌هوک
             $host = $_SERVER['HTTP_HOST'] ?? '';
             if (empty($host)) {
-                $tg->sendMessage($userId, "❌ خطای سیستمی در تشخیص دامنه رندر رخ داده است. لطفاً مراتب را با ادمین در میان بگذارید.");
+                $tg->sendMessage($userId, "❌ خطای سیستمی در تشخیص دامنه رندر رخ داده است.");
                 exit;
             }
 
-            // ساخت آدرس داینامیک وب‌هوک منطبق با معماری چندمستاجری ما
             $webhookUrl = "https://{$host}/index.php?bot_token=" . urlencode($tokenInput);
-
-            // ست کردن وب‌هوک در سرور تلگرام
             $webhookResult = $tempTg->setWebhook($webhookUrl);
 
             if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
-                // ثبت یا آپدیت ربات در دیتابیس نئون
+                // ثبت ربات در دیتابیس نئون
                 $stmt = $db->prepare("
                     INSERT INTO bots (token, owner_id, bot_name) 
                     VALUES (:token, :owner_id, :bot_name)
@@ -197,7 +325,7 @@ if (!empty($text)) {
                 $botRow = $stmt->fetch();
                 $newBotId = (int)$botRow['id'];
 
-                // مقداردهی اولیه تنظیمات و نرخ‌های حقوق برای ربات جدید
+                // مقداردهی اولیه تنظیمات برای ربات جدید
                 $stmtSettings = $db->prepare("
                     INSERT INTO settings (bot_id, key, value) VALUES 
                     (:bot_id, 'rate_translator', '10000'),
@@ -208,7 +336,7 @@ if (!empty($text)) {
                 ");
                 $stmtSettings->execute(['bot_id' => $newBotId]);
 
-                // ثبت سازنده به عنوان مالک (owner) در لیست کاربران ربات جدید
+                // ثبت سازنده به عنوان مالک (owner) در ربات جدید
                 $stmtOwner = $db->prepare("
                     INSERT INTO users (bot_id, tg_id, username, full_name, role, status)
                     VALUES (:bot_id, :tg_id, :username, :full_name, 'owner', 'approved')
@@ -222,7 +350,6 @@ if (!empty($text)) {
                     'full_name' => $fullName
                 ]);
 
-                // ریست وضعیت کاربر به حالت عادی
                 FSM::clearStep(0, $userId);
 
                 $keyboard = [
@@ -234,10 +361,10 @@ if (!empty($text)) {
 
                 $tg->sendMessage($userId, "🎉 <b>تبریک می‌گویم! ربات اختصاصی شما ساخته شد.</b>\n\n🤖 آیدی ربات: @{$botUsername}\n⚙️ نام نمایشی: {$botName}\n\n👇 وارد ربات خود شوید و دکمه <code>/start</code> را بفرستید تا کنترل پنل کامل ادمین تیم مانهوا برایتان باز شود.", $keyboard);
             } else {
-                $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد. احتمالاً آی‌پی یا پروتکل دچار تداخل شده است. مجدداً تلاش کنید.");
+                $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد.");
             }
         } else {
-            $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد. لطفاً مجدداً بررسی کنید که توکن را به طور صحیح کپی کرده باشید.");
+            $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد.");
         }
         exit;
     }
