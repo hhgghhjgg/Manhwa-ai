@@ -5,8 +5,8 @@
  * Role: Master Bot Processor with Advanced Real-time Owner Statistics
  */
 
-// اطمینان از صحت دسترسی به کانتکست ربات مادر
-if (!isset($botContext) || !isnull($botContext) || !$botContext['is_master']) {
+// بررسی کانتکست و جلوگیری از خطای دسترسی غیرمجاز
+if (!isset($botContext) || !$botContext['is_master']) {
     exit;
 }
 
@@ -102,10 +102,6 @@ if ($callbackQuery) {
     // کالبک راهنمای ساخت ربات
     elseif ($callbackData === 'master_help') {
         $helpText = "❓ <b>راهنمای گام‌به‌گام ساخت ربات مدیریت مانهوا:</b>\n\n"
-                  . "۱. وارد ربات @BotFather شوید.\n"
-                  . "۲. دستور <code>/newbot</code> را بزنید.\n"
-                  . "۳. نام ربات و سپس یک یوزرنیم که به bot ختم شود انتخاب کنید.\n"
-                  . "۴. توکن ارسالی از طرف بات‌فادر را کپی کرده و در بخش [➕ ساخت ربات جدید] ارسال کنید.\n\n"
                   . "💡 پس از ثبت موفق، وارد ربات مانهوای خود شده و <code>/start</code> بزنید تا به عنوان مدیر کل تیم، کنترل پنل شیشه‌ای مانهوا را ببینید.";
         
         $keyboard = [
