@@ -114,7 +114,7 @@ if (!function_exists('showAdminPermissionsPanel')) {
             ]
         ];
 
-        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای فعال یا غیرفعال کردن هر دسترسی, روی گزینه مربوطه کلیک کنید:";
+        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای فعال یا غیرفعال کردن هر دسترسی، روی گزینه مربوطه کلیک کنید:";
 
         if ($messageId) {
             $tg->editMessageText($chatId, $messageId, $text, $keyboard);
@@ -130,7 +130,7 @@ if (!function_exists('showAdminPermissionsPanel')) {
 if ($message) {
     $text = isset($message['text']) ? trim($message['text']) : '';
 
-    // الف) سیستم لغو عملیات از طریق متن (/cancel)
+    // الف) سیستم لغو عمومی عملیات جاری از طریق دستور متنی
     if ($text === '/cancel' || (isset($callbackQuery) && $callbackQuery['data'] === 'admin_cancel')) {
         FSM::clearStep($botId, $userId);
         
@@ -658,7 +658,7 @@ if ($callbackQuery) {
         $stmt->execute(['bot_id' => $botId, 'manhwa_id' => $mId, 'role' => $role]);
 
         $tg->sendMessage($userId, "✅ عزل " . getRoleFarsiAdmin($role) . " با موفقیت انجام شد.", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_view_manhwa_{$mId}"]]]
+            'inline_keyboard' => [[['text' => '🔙 بازگشت به مانهوا', 'callback_data' => "admin_view_manhwa_{$mId}"]]]
         ]);
         exit;
     }
@@ -1260,7 +1260,7 @@ if ($callbackQuery) {
             ]
         ];
 
-        $tg->sendMessage($userId, "🛡️ <b>لطفاً آیدی عددی تلگرام کاربر مورد نظر جهت ارتقا به ادمین را بفرستید:</b>\n\nپس از وارد کردن آیدی عددی, پنل تعیین سطح دسترسی ده‌گانه برای شما باز می‌شود.\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
+        $tg->sendMessage($userId, "🛡️ <b>لطفاً آیدی عددی تلگرام کاربر مورد نظر جهت ارتقا به ادمین را بفرستید:</b>\n\nپس از وارد کردن آیدی عددی، پنل تعیین سطح دسترسی ده‌گانه برای شما باز می‌شود.\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
