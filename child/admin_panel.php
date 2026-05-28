@@ -114,7 +114,7 @@ if (!function_exists('showAdminPermissionsPanel')) {
             ]
         ];
 
-        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای فعال یا غیرفعال کردن هر دسترسی، روی گزینه مربوطه کلیک کنید:";
+        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای فعال یا غیرفعال کردن هر دسترسی, روی گزینه مربوطه کلیک کنید:";
 
         if ($messageId) {
             $tg->editMessageText($chatId, $messageId, $text, $keyboard);
@@ -358,11 +358,24 @@ if ($message) {
             exit;
         }
 
-        // ثبت عنوان برای آزمون تمرینی جدید پس از دریافت فایل داکیومنت
+        // ثبت نهایی عنوان آزمون تمرینی دلخواه مجهز به سیستم واکشی ایمن دیتابیس موقت (بای‌پس کامل باگ خرد شدن شناسه)
         elseif (strpos($step, 'admin_waiting_exam_title_') === 0) {
-            $stepParts = explode('_', $step);
-            $examRole  = $stepParts[4];
-            $examFile  = $stepParts[5];
+            $examRole = str_replace('admin_waiting_exam_title_', '', $step);
+
+            // واکشی امن فایل‌آیدی از جدول تنظیمات موقت
+            $stmtFile = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = :key LIMIT 1");
+            $stmtFile->execute([
+                'bot_id' => $botId,
+                'key'    => "temp_exam_file_{$examRole}"
+            ]);
+            $fileRow = $stmtFile->fetch();
+            $examFile = $fileRow ? $fileRow['value'] : null;
+
+            if (!$examFile) {
+                $tg->sendMessage($userId, "❌ خطای سیستمی: فایل آزمون یافت نشد. مجدداً آپلود کنید.");
+                FSM::clearStep($botId, $userId);
+                exit;
+            }
 
             $stmtIns = $db->prepare("
                 INSERT INTO practice_exams (bot_id, role, title, file_id, instructions)
@@ -371,7 +384,7 @@ if ($message) {
             $stmtIns->execute([
                 'bot_id'       => $botId,
                 'role'         => $examRole,
-                'title'        => $text, // متن فرستاده شده به عنوان عنوان آزمون ذخیره می‌شود
+                'title'        => $text,
                 'file_id'      => $examFile,
                 'instructions' => 'آزمون تمرینی و دلخواه برای اعضای رسمی جهت ارزیابی و بهبود مهارت.'
             ]);
@@ -383,12 +396,24 @@ if ($message) {
             exit;
         }
 
-        // دریافت قوانین تست و ذخیره نهایی در جدول test_templates دیتابیس نئون
+        // دریافت توضیحات تست استخدامی و ثبت نهایی مجهز به سیستم واکشی ایمن دیتابیس موقت (بای‌پس کامل باگ خرد شدن شناسه)
         elseif (strpos($step, 'admin_waiting_rec_test_rules_') === 0) {
-            $stepParts = explode('_', $step);
-            // ساختار گام: admin_waiting_rec_test_rules_ROLE_FILEID
-            $recRole = $stepParts[5];
-            $recFile = $stepParts[6];
+            $recRole = str_replace('admin_waiting_rec_test_rules_', '', $step);
+
+            // واکشی امن فایل‌آیدی موقت
+            $stmtFile = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = :key LIMIT 1");
+            $stmtFile->execute([
+                'bot_id' => $botId,
+                'key'    => "temp_rec_test_file_{$recRole}"
+            ]);
+            $fileRow = $stmtFile->fetch();
+            $recFile = $fileRow ? $fileRow['value'] : null;
+
+            if (!$recFile) {
+                $tg->sendMessage($userId, "❌ خطای سیستمی: فایل تست استخدامی در دیتابیس موقت یافت نشد. لطفاً مراحل را مجدداً تکرار کنید.");
+                FSM::clearStep($botId, $userId);
+                exit;
+            }
 
             $stmt = $db->prepare("
                 INSERT INTO test_templates (bot_id, role, file_id, instructions)
@@ -413,7 +438,7 @@ if ($message) {
 
     // ج) گام‌های دریافت فایل/عکس FSM ادمین (حتی بدون داشتن متن در پیام)
 
-    // فرآیند بارگزاری فایل آزمون تمرینی جدید همراه با پیشوند تشخیص نوع فایل
+    // فرآیند بارگزاری فایل آزمون تمرینی جدید همراه با پیشوند تشخیص نوع فایل و ذخیره امن در دیتابیس موقت
     if ($step === 'admin_waiting_exam_file') {
         $fileId   = null;
         $fileType = 'doc'; // پیش‌فرض
@@ -434,13 +459,25 @@ if ($message) {
         // ساخت شناسه مجهز به پیشوند جهت هدایت پویا
         $prefixedFileId = $fileType . ":" . $fileId;
 
-        // گرفتن نقش انتخابی که قبلاً در سشن یا وضعیت ثبت شده بود
+        // گرفتن نقش انتخابی که قبلاً در دیتابیس موقت ثبت شده بود
         $stmtRole = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'temp_exam_role' LIMIT 1");
         $stmtRole->execute(['bot_id' => $botId]);
         $roleRow = $stmtRole->fetch();
         $examRole = $roleRow ? $roleRow['value'] : 'translator';
 
-        FSM::setStep($botId, $userId, "admin_waiting_exam_title_{$examRole}_{$prefixedFileId}");
+        // ذخیره فایل‌آیدی به صورت ایمن در دیتابیس موقت
+        $stmtTemp = $db->prepare("
+            INSERT INTO settings (bot_id, key, value) 
+            VALUES (:bot_id, :key, :value)
+            ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value
+        ");
+        $stmtTemp->execute([
+            'bot_id' => $botId,
+            'key'    => "temp_exam_file_{$examRole}",
+            'value'  => $prefixedFileId
+        ]);
+
+        FSM::setStep($botId, $userId, "admin_waiting_exam_title_{$examRole}");
         $tg->sendMessage($userId, "✍️ <b>فایل آزمون دریافت شد.</b>\n\nحالا یک عنوان مناسب برای این آزمون بنویسید و ارسال کنید:");
         exit;
     }
@@ -495,7 +532,7 @@ if ($callbackQuery) {
     $messageId    = $callbackQuery['message']['message_id'];
     $adminChatId  = $callbackQuery['message']['chat']['id'];
 
-    // ۱. منوی اصلی ادمین
+    // ۱. منوی اصلی ادمین و لغو عمومی از طریق دکمه شیشه‌ای
     if ($callbackData === 'admin_back_to_menu' || $callbackData === 'admin_cancel') {
         $tg->answerCallbackQuery($callbackId, "انجام شد.");
         FSM::clearStep($botId, $userId);
@@ -796,7 +833,7 @@ if ($callbackQuery) {
 
             $caption = "📄 فایل تست حل شده داوطلب برای نقش <b>" . getRoleFarsiAdmin($testFile['role']) . "</b>";
 
-            // انتخاب متد منطبق بر اساس پیشوند تفکیک‌کننده
+            // انتخاب متد ارسالی تلگرام بر اساس پیشوند تفکیک‌کننده
             if ($fileType === 'photo') {
                 $tg->sendPhoto($userId, $cleanFileId, $caption);
             } else {
@@ -1223,7 +1260,7 @@ if ($callbackQuery) {
             ]
         ];
 
-        $tg->sendMessage($userId, "🛡️ <b>لطفاً آیدی عددی تلگرام کاربر مورد نظر جهت ارتقا به ادمین را بفرستید:</b>\n\nپس از وارد کردن آیدی عددی، پنل تعیین سطح دسترسی ده‌گانه برای شما باز می‌شود.\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
+        $tg->sendMessage($userId, "🛡️ <b>لطفاً آیدی عددی تلگرام کاربر مورد نظر جهت ارتقا به ادمین را بفرستید:</b>\n\nپس از وارد کردن آیدی عددی, پنل تعیین سطح دسترسی ده‌گانه برای شما باز می‌شود.\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
