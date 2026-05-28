@@ -2,10 +2,10 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/user_panel.php
- * Role: Full Member & Guest Dashboard Processor (Recruitment, Support Tickets, Practice Exams)
+ * Role: Full Member & Guest Dashboard Processor (Recruitment, Support Tickets, Practice Exams, Cancel System)
  */
 
-// اطمینان از سلامت کانتکست و متغیرهای تعریف شده در index.php و child/router.php
+// ۱. اطمینان از صحت کانتکست و متغیرهای تعریف شده در index.php و child/router.php
 if (!isset($botContext) || !isset($tg) || !isset($user) || !isset($db)) {
     exit;
 }
@@ -38,6 +38,47 @@ if (!function_exists('getRoleFarsi')) {
 }
 
 // ==========================================
+// فاز ۰: سیستم لغو عمومی هوشمند (Cancel Process)
+// چه کاربر دستور /cancel را تایپ کند و چه دکمه لغو را لمس کند، این بخش او را ریست می‌کند.
+// ==========================================
+if ($text === '/cancel' || (isset($callbackQuery) && $callbackQuery['data'] === 'user_cancel')) {
+    FSM::clearStep($botId, $userId);
+    
+    if (isset($callbackQuery)) {
+        $tg->answerCallbackQuery($callbackId, "عملیات لغو شد.");
+    }
+
+    if ($status === 'approved') {
+        // بازگرداندن اعضای رسمی به پنل اصلی
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '💰 میزان حقوق من', 'callback_data' => 'member_salary'],
+                    ['text' => '📚 کارها و پروژه‌ها', 'callback_data' => 'member_tasks']
+                ],
+                [
+                    ['text' => '🏆 آزمون‌های تمرینی', 'callback_data' => 'user_practice_exams'],
+                    ['text' => '✉️ تیکت پشتیبانی ادمین', 'callback_data' => 'user_open_ticket']
+                ]
+            ]
+        ];
+        
+        $roleFarsi = getRoleFarsi($role);
+        $tg->sendMessage($userId, "❌ <b>عملیات لغو شد.</b>\n\n👋 منوی اصلی اعضا (نقش شما: {$roleFarsi}):\nلطفاً یکی از گزینه‌های پنل شیشه‌ای زیر را انتخاب کنید:", $keyboard);
+    } else {
+        // بازگرداندن کاربران مهمان به صفحه ورود استخدام
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '🤝 عضویت در تیم مانهوا مانپین', 'callback_data' => 'join_team']]
+            ]
+        ];
+        
+        $tg->sendMessage($userId, "❌ <b>عملیات لغو شد.</b>\n\n👋 به منوی اصلی خوش آمدید. برای شروع عضویت دکمه زیر را فشار دهید:", $keyboard);
+    }
+    exit;
+}
+
+// ==========================================
 // فاز ۱: پردازش وضعیت‌های ورودی متنی FSM کاربر (دریافت فایل یا تیکت)
 // ==========================================
 
@@ -53,7 +94,9 @@ if (strpos($step, 'waiting_test_') === 0) {
     }
 
     if (!$fileId) {
-        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً فایل حل شده تست خود را فقط به صورت سند (Document) یا تصویر بفرستید:");
+        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً فایل حل شده تست خود را فقط به صورت سند (Document) یا تصویر بفرستید:\n\n💡 جهت لغو، دستور <code>/cancel</code> را بفرستید.", [
+            'inline_keyboard' => [[['text' => '❌ لغو و بازگشت', 'callback_data' => 'user_cancel']]]
+        ]);
         exit;
     }
 
@@ -94,7 +137,9 @@ elseif (strpos($step, 'user_typing_ticket_') === 0) {
     $assignedAdminId = ($targetAdminPart === 'null') ? null : (int)$targetAdminPart;
 
     if (empty($text)) {
-        $tg->sendMessage($userId, "❌ تیکت شما نمی‌تواند خالی باشد. لطفاً موضوع یا متن مشکل خود را تایپ کرده و بفرستید:");
+        $tg->sendMessage($userId, "❌ تیکت شما نمی‌تواند خالی باشد. لطفاً موضوع یا متن مشکل خود را تایپ کرده و بفرستید:\n\n💡 جهت لغو، دستور <code>/cancel</code> را بفرستید.", [
+            'inline_keyboard' => [[['text' => '❌ لغو و بازگشت', 'callback_data' => 'user_cancel']]]
+        ]);
         exit;
     }
 
@@ -157,7 +202,9 @@ elseif (strpos($step, 'user_waiting_exam_solve_') === 0) {
     }
 
     if (!$fileId) {
-        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً پاسخ آزمون تمرینی خود را فقط به صورت سند (Document) یا تصویر بفرستید:");
+        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً پاسخ آزمون تمرینی خود را فقط به صورت سند (Document) یا تصویر بفرستید:\n\n💡 جهت لغو، دستور <code>/cancel</code> را بفرستید.", [
+            'inline_keyboard' => [[['text' => '❌ لغو و بازگشت', 'callback_data' => 'user_cancel']]]
+        ]);
         exit;
     }
 
@@ -269,10 +316,11 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۳. ارسال فایل تست خام استخدامی
+    // ۳. ارسال فایل تست خام استخدامی (به طور کاملاً ایمن و بدون خرد شدن فایل‌آیدی تلگرام)
     elseif (strpos($callbackData, 'get_test_') === 0) {
         $testRole = str_replace('get_test_', '', $callbackData);
 
+        // واکشی فایل‌آیدی سالم و دستورالعمل از دیتابیس نئون
         $stmt = $db->prepare("SELECT file_id, instructions FROM test_templates WHERE bot_id = :bot_id AND role = :role LIMIT 1");
         $stmt->execute([
             'bot_id' => $botId,
@@ -280,7 +328,7 @@ if ($callbackQuery) {
         ]);
         $template = $stmt->fetch();
 
-        if (!$template) {
+        if (!$template || empty($template['file_id'])) {
             $tg->sendMessage($userId, "⚠️ متاسفانه در حال حاضر تستی برای این نقش توسط ادمین‌های ربات آپلود نشده است. لطفاً بعداً تلاش کرده یا با ادمین در ارتباط باشید.");
             exit;
         }
@@ -308,7 +356,13 @@ if ($callbackQuery) {
 
         FSM::setStep($botId, $userId, "waiting_test_{$testRole}");
         
-        $tg->sendMessage($userId, "📥 <b>بستر دریافت فایل فعال شد.</b>\n\nلطفاً پاسخ تست حل شده خود را به صورت سند (Document) یا تصویر بفرستید:");
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ انصراف و لغو', 'callback_data' => 'user_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "📥 <b>بستر دریافت فایل فعال شد.</b>\n\nلطفاً پاسخ تست حل شده خود را به صورت سند (Document) یا تصویر بفرستید:\n\n💡 جهت لغو عملیات دکمه زیر را بزنید یا دستور <code>/cancel</code> را ارسال کنید:", $keyboard);
         exit;
     }
 
@@ -425,7 +479,14 @@ if ($callbackQuery) {
         $adminId = ($targetAdmin === 'general') ? 'null' : (int)str_replace('to_', '', $targetAdmin);
 
         FSM::setStep($botId, $userId, "user_typing_ticket_{$adminId}");
-        $tg->sendMessage($userId, "✍️ <b>لطفاً موضوع یا متن تیکت پشتیبانی خود را بنویسید و ارسال کنید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ انصراف و لغو تیکت', 'callback_data' => 'user_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>لطفاً موضوع یا متن تیکت پشتیبانی خود را بنویسید و ارسال کنید:</b>\n\n💡 جهت لغو عملیات دکمه زیر را بزنید یا دستور <code>/cancel</code> را ارسال کنید:", $keyboard);
         exit;
     }
 
@@ -504,7 +565,14 @@ if ($callbackQuery) {
         $examId = (int)str_replace('user_submit_exam_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "user_waiting_exam_solve_{$examId}");
-        $tg->sendMessage($userId, "📥 <b>بستر دریافت آزمون تمرینی حل شده فعال شد.</b>\n\nلطفاً پاسخ آزمون را به صورت سند (Document) یا تصویر معمولی ارسال فرمایید:");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ انصراف و لغو', 'callback_data' => 'user_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "📥 <b>بستر دریافت آزمون تمرینی حل شده فعال شد.</b>\n\nلطفاً پاسخ آزمون را به صورت سند (Document) یا تصویر معمولی ارسال فرمایید:\n\n💡 جهت لغو عملیات دکمه زیر را بزنید یا دستور <code>/cancel</code> را ارسال کنید:", $keyboard);
         exit;
     }
 
