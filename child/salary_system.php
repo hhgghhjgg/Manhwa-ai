@@ -31,7 +31,7 @@ if (!function_exists('lazyMonthlyReset')) {
         $row = $stmt->fetch();
         $lastResetMonth = $row ? $row['value'] : '';
 
-        // در صورت عدم تطابق تاریخ، فرآیند صفر کردن آمارهای ماهانه اجرا می‌شود
+        // در صورت عدم تطابق تاریخ، فرآیند صفر کردن آمارهای ماه جاری اجرا می‌شود
         if ($currentMonth !== $lastResetMonth) {
             $db->beginTransaction();
             try {
@@ -68,8 +68,7 @@ if (!function_exists('checkInactiveManhwas')) {
      * پایش مانهواهای ثبت شده و ارسال هشدار خودکار به گروه‌ها در صورت راکد ماندن پروژه
      */
     function checkInactiveManhwas($db, $tg, $botId) {
-        // واکشی مانهواهایی که از آخرین فعالیت کاربری آن‌ها بیش از روزهای مجاز گذشته است
-        // نرخ پیش‌فرض روزهای مجاز راکد ماندن در صورت عدم وجود تنظیمات روی ۷ روز است
+        // واکشی مانهواهایی که از آخرین فعالیت کاربری آن‌ها بیش از روزهای مجاز گذشته است (اصلاح تداخل SQL)
         $stmtInactive = $db->prepare("
             SELECT m.id, m.title, m.group_id, m.last_active_at,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - m.last_active_at)) as inactive_days
@@ -88,7 +87,7 @@ if (!function_exists('checkInactiveManhwas')) {
             return;
         }
 
-        // واکشی لیست تمامی ادمین‌ها و مالک این ربات جهت تگ کردن در پیام هشدار
+        // واکشی لیست تمامی ادمین‌ها و مالک این ربات جهت تگ کردن در پیام هشدار (اصلاح تداخل SQL)
         $stmtAdmins = $db->prepare("
             SELECT tg_id, full_name 
             FROM users 
@@ -97,7 +96,7 @@ if (!function_exists('checkInactiveManhwas')) {
         $stmtAdmins->execute(['bot_id' => $botId]);
         $admins = $stmtAdmins->fetchAll();
 
-        // ایجاد منشن‌های HTML با استفاده از آیدی عددی (بدون نیاز به داشتن یوزرنیم)
+        // ایجاد منشن‌های HTML با استفاده از آیدی عددی
         $mentions = "";
         foreach ($admins as $ad) {
             $mentions .= " <a href='tg://user?id={$ad['tg_id']}'>{$ad['full_name']}</a>";
@@ -113,7 +112,7 @@ if (!function_exists('checkInactiveManhwas')) {
             // ارسال پیام اخطار به گروه اختصاصی مانهوا
             $tg->sendMessage($manhwa['group_id'], $warningText);
 
-            // به‌روزرسانی فیلد تاریخ آخرین هشدار جهت جلوگیری از ارسال پیام‌های مکرر و اسپم در ۲۴ ساعت آینده
+            // به‌روزرسانی فیلد تاریخ آخرین هشدار
             $stmtUpdateWarning = $db->prepare("UPDATE manhwas SET last_warning_sent_at = CURRENT_TIMESTAMP WHERE id = :id");
             $stmtUpdateWarning->execute(['id' => $manhwa['id']]);
         }
@@ -155,8 +154,7 @@ if (!function_exists('processChapterApproval')) {
             $stmtUpdateStatus = $db->prepare("UPDATE chapters SET status = 'approved' WHERE bot_id = :bot_id AND id = :id");
             $stmtUpdateStatus->execute(['bot_id' => $botId, 'id' => $chapterId]);
 
-            // ۲. به‌روزرسانی فیلد آخرین چپتر مانهوا (با متد GREATEST برای جلوگیری از تداخل ثبت چپترهای نامرتب)
-            // همچنین صفر کردن مجدد شمارنده‌ی راکد ماندن مانهوا
+            // ۲. به‌روزرسانی فیلد آخرین چپتر مانهوا و صفر کردن مجدد شمارنده‌ی راکد ماندن مانهوا
             $stmtUpdateManhwa = $db->prepare("
                 UPDATE manhwas 
                 SET last_chapter = GREATEST(last_chapter, :chapter_num),
@@ -206,7 +204,7 @@ if (!function_exists('processChapterApproval')) {
 
             $db->commit();
 
-            // ۴. ارسال پیام اتمام کار در گروه رسمی تلگرامی مانهوا جهت اطلاع کل اعضای گروه
+            // ۴. ارسال پیام اتمام کار در گروه رسمی تلگرامی مانهوا
             if (!empty($groupId)) {
                 $groupText = "🔔 <b>اطلاعیه تایید چپتر جدید مانهوا!</b>\n\n"
                            . "🎉 چپتر <code>{$chapter['chapter_num']}</code> مانهوای <b>«{$manhwaTitle}»</b> توسط مدیریت بررسی و با موفقیت تایید نهایی گردید.\n\n"
@@ -260,7 +258,7 @@ if (!function_exists('processChapterRejection')) {
 }
 
 // ==========================================
-// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین در چت شخصی
+// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
