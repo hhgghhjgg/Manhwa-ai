@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/admin_panel.php
- * Role: Full Advanced Admin Panel Processor with 10-Level Granular Permissions
+ * Role: Full Advanced Admin Panel Processor with 10-Level Granular Permissions, Dynamic File Dispatcher & Cancel System
  */
 
 // ۱. لود خودکار موتور تسویه حساب، پایش مانهوا و سیستم ریست ماهانه
@@ -125,12 +125,32 @@ if (!function_exists('showAdminPermissionsPanel')) {
 }
 
 // ==========================================
-// فاز ۲: پردازش گام‌های ورودی متنی FSM ادمین
+// فاز ۲: پردازش وضعیت‌های ورودی متنی و فایلی FSM ادمین
 // ==========================================
 if ($message) {
     $text = isset($message['text']) ? trim($message['text']) : '';
 
-    // پردازش پیام‌های متنی
+    // الف) سیستم لغو عملیات از طریق متن (/cancel)
+    if ($text === '/cancel' || (isset($callbackQuery) && $callbackQuery['data'] === 'admin_cancel')) {
+        FSM::clearStep($botId, $userId);
+        
+        if (isset($callbackQuery)) {
+            $tg->answerCallbackQuery($callbackId, "عملیات لغو شد.");
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '📚 لیست کارها (پروژه‌ها)', 'callback_data' => 'admin_projects']],
+                [['text' => '👥 مدیریت عضوگیری', 'callback_data' => 'admin_recruit']],
+                [['text' => '⚙️ تنظیمات تیم', 'callback_data' => 'admin_settings']]
+            ]
+        ];
+        
+        $tg->sendMessage($userId, "❌ <b>عملیات لغو شد.</b>\n\n👋 به پنل مدیریت تیم خوش آمدید. بخش مورد نظر را انتخاب کنید:", $keyboard);
+        exit;
+    }
+
+    // ب) پردازش پیام‌های متنی FSM ادمین
     if (!empty($text)) {
         // ثبت قوانین جدید استخدام
         if ($step === 'admin_waiting_rules') {
@@ -391,14 +411,28 @@ if ($message) {
         }
     }
 
-    // فرآیند بارگزاری فایل آزمون تمرینی جدید
+    // ج) گام‌های دریافت فایل/عکس FSM ادمین (حتی بدون داشتن متن در پیام)
+
+    // فرآیند بارگزاری فایل آزمون تمرینی جدید همراه با پیشوند تشخیص نوع فایل
     if ($step === 'admin_waiting_exam_file') {
-        $fileId = $message['document']['file_id'] ?? $message['photo'][0]['file_id'] ?? null;
+        $fileId   = null;
+        $fileType = 'doc'; // پیش‌فرض
+
+        if (isset($message['document'])) {
+            $fileId   = $message['document']['file_id'];
+            $fileType = 'doc';
+        } elseif (isset($message['photo'])) {
+            $fileId   = end($message['photo'])['file_id'];
+            $fileType = 'photo';
+        }
         
         if (!$fileId) {
             $tg->sendMessage($userId, "❌ فایل ارسالی معتبر نیست. لطفاً یک فایل سند یا تصویر بفرستید:");
             exit;
         }
+
+        // ساخت شناسه مجهز به پیشوند جهت هدایت پویا
+        $prefixedFileId = $fileType . ":" . $fileId;
 
         // گرفتن نقش انتخابی که قبلاً در سشن یا وضعیت ثبت شده بود
         $stmtRole = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'temp_exam_role' LIMIT 1");
@@ -406,22 +440,47 @@ if ($message) {
         $roleRow = $stmtRole->fetch();
         $examRole = $roleRow ? $roleRow['value'] : 'translator';
 
-        FSM::setStep($botId, $userId, "admin_waiting_exam_title_{$examRole}_{$fileId}");
+        FSM::setStep($botId, $userId, "admin_waiting_exam_title_{$examRole}_{$prefixedFileId}");
         $tg->sendMessage($userId, "✍️ <b>فایل آزمون دریافت شد.</b>\n\nحالا یک عنوان مناسب برای این آزمون بنویسید و ارسال کنید:");
         exit;
     }
 
-    // هندل دریافت فایل تست استخدامی
+    // دریافت فایل تست استخدامی و ذخیره موقت فایل‌آیدی همراه با پیشوند تشخیص نوع فایل
     if (strpos($step, 'admin_waiting_rec_test_file_') === 0) {
         $recRole = str_replace('admin_waiting_rec_test_file_', '', $step);
-        $fileId = $message['document']['file_id'] ?? $message['photo'][0]['file_id'] ?? null;
+        
+        $fileId   = null;
+        $fileType = 'doc'; // پیش‌فرض
+
+        if (isset($message['document'])) {
+            $fileId   = $message['document']['file_id'];
+            $fileType = 'doc';
+        } elseif (isset($message['photo'])) {
+            $fileId   = end($message['photo'])['file_id']; // بالاترین کیفیت عکس
+            $fileType = 'photo';
+        }
         
         if (!$fileId) {
             $tg->sendMessage($userId, "❌ فایل ارسالی معتبر نیست. لطفاً یک فایل سند یا تصویر بفرستید:");
             exit;
         }
 
-        FSM::setStep($botId, $userId, "admin_waiting_rec_test_rules_{$recRole}_{$fileId}");
+        // ساخت شناسه مجهز به پیشوند جهت هدایت پویا
+        $prefixedFileId = $fileType . ":" . $fileId;
+
+        // ذخیره امن فایل‌آیدی تلگرام در دیتابیس موقت
+        $stmtTemp = $db->prepare("
+            INSERT INTO settings (bot_id, key, value) 
+            VALUES (:bot_id, :key, :value)
+            ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value
+        ");
+        $stmtTemp->execute([
+            'bot_id' => $botId,
+            'key'    => "temp_rec_test_file_{$recRole}",
+            'value'  => $prefixedFileId
+        ]);
+
+        FSM::setStep($botId, $userId, "admin_waiting_rec_test_rules_{$recRole}");
         $tg->sendMessage($userId, "✍️ <b>فایل تست استخدام دریافت شد.</b>\n\nحالا قوانین و توضیحات اختصاصی که می‌خواهید کاربر هنگام دریافت این تست مشاهده کند (مثال: نحوه ارسال، فرمت فایل و مهلت حل تست) را بنویسید و بفرستید:");
         exit;
     }
@@ -436,10 +495,9 @@ if ($callbackQuery) {
     $messageId    = $callbackQuery['message']['message_id'];
     $adminChatId  = $callbackQuery['message']['chat']['id'];
 
-    $tg->answerCallbackQuery($callbackId);
-
     // ۱. منوی اصلی ادمین
-    if ($callbackData === 'admin_back_to_menu') {
+    if ($callbackData === 'admin_back_to_menu' || $callbackData === 'admin_cancel') {
+        $tg->answerCallbackQuery($callbackId, "انجام شد.");
         FSM::clearStep($botId, $userId);
 
         $keyboard = [
@@ -456,6 +514,7 @@ if ($callbackQuery) {
 
     // ۲. ورود به بخش لیست کارها (پروژه‌ها)
     elseif ($callbackData === 'admin_projects') {
+        $tg->answerCallbackQuery($callbackId);
         $stmt = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id ORDER BY id DESC");
         $stmt->execute(['bot_id' => $botId]);
         $manhwas = $stmt->fetchAll();
@@ -479,6 +538,7 @@ if ($callbackQuery) {
 
     // ۳. جزییات یک مانهوای خاص با تیم متصل شده به آن
     elseif (strpos($callbackData, 'admin_view_manhwa_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $manhwaId = (int)str_replace('admin_view_manhwa_', '', $callbackData);
 
         // واکشی مشخصات مانهوا
@@ -545,6 +605,7 @@ if ($callbackQuery) {
 
     // ۴. عزل مستقیم یک عضو از مانهوا
     elseif (strpos($callbackData, 'admin_dismiss_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $params = str_replace('admin_dismiss_', '', $callbackData);
         $parts  = explode('_', $params);
         $mId    = (int)$parts[0];
@@ -560,13 +621,14 @@ if ($callbackQuery) {
         $stmt->execute(['bot_id' => $botId, 'manhwa_id' => $mId, 'role' => $role]);
 
         $tg->sendMessage($userId, "✅ عزل " . getRoleFarsiAdmin($role) . " با موفقیت انجام شد.", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت به مانهوا', 'callback_data' => "admin_view_manhwa_{$mId}"]]]
+            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_view_manhwa_{$mId}"]]]
         ]);
         exit;
     }
 
     // ۵. آغاز فرآیند انتساب مستقیم یک عضو به مانهوا
     elseif (strpos($callbackData, 'admin_assign_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $params = str_replace('admin_assign_', '', $callbackData);
         
         if (!hasPermission($db, $botId, $userId, 'team')) {
@@ -576,12 +638,19 @@ if ($callbackQuery) {
 
         FSM::setStep($botId, $userId, "admin_waiting_assign_{$params}");
 
-        $tg->sendMessage($userId, "👤 <b>لطفاً شناسه عضو جدید را ارسال کنید:</b>\n\nمی‌توانید آیدی عددی تلگرام کاربر را بفرستید، یا آیدی کاربری او را (با علامت @) ارسال کنید:");
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "👤 <b>لطفاً شناسه عضو جدید را ارسال کنید:</b>\n\nمی‌توانید آیدی عددی تلگرام کاربر را بفرستید، یا آیدی کاربری او را (با علامت @) ارسال کنید:\n\n💡 جهت انصراف دکمه زیر را فشار دهید:", $keyboard);
         exit;
     }
 
     // ۶. ورود به بخش مدیریت عضوگیری
     elseif ($callbackData === 'admin_recruit') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'recruit')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای مدیریت عضوگیری را ندارید.");
             exit;
@@ -602,6 +671,7 @@ if ($callbackQuery) {
 
     // کالبک شروع آپلود تست استخدامی
     elseif ($callbackData === 'admin_upload_rec_test') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'recruit')) {
             $tg->sendMessage($userId, "⚠️ شما دسترسی لازم را ندارید.");
             exit;
@@ -624,25 +694,42 @@ if ($callbackQuery) {
 
     // تغییر مرحله FSM برای دریافت فایل تست استخدام
     elseif (strpos($callbackData, 'admin_set_rec_test_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $recRole = str_replace('admin_set_rec_test_', '', $callbackData);
         FSM::setStep($botId, $userId, "admin_waiting_rec_test_file_{$recRole}");
-        $tg->sendMessage($userId, "📥 <b>لطفاً فایل تست استخدام برای نقش " . getRoleFarsiAdmin($recRole) . " را بفرستید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "📥 <b>لطفاً فایل تست استخدام برای نقش " . getRoleFarsiAdmin($recRole) . " را بفرستید:</b>\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۷. مشاهده شرایط و قوانین جهت ادیت
     elseif ($callbackData === 'admin_edit_rules') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'recruit')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای تغییر قوانین استخدام را ندارید.");
             exit;
         }
         FSM::setStep($botId, $userId, 'admin_waiting_rules');
-        $tg->sendMessage($userId, "✍️ <b>لطفاً قوانین و شرایط جدید مانهوا را به صورت یک پیام بنویسید و بفرستید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>لطفاً قوانین و شرایط جدید مانهوا را به صورت یک پیام بنویسید و بفرستید:</b>\n\n💡 جهت لغو عملیات دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۸. مشاهده ۱۰ تست حل شده بررسی نشده آخر
     elseif ($callbackData === 'admin_view_tests') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'recruit')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای بررسی تست‌ها را ندارید.");
             exit;
@@ -686,8 +773,9 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۹. ادمین فایل حل شده تست کاربر را دریافت و چک می‌کند
+    // ۹. ادمین فایل حل شده تست کاربر را دریافت و چک می‌کند (به صورت پویا و ۱۰۰٪ بدون باگ Photo/Document)
     elseif (strpos($callbackData, 'admin_check_test_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $testId = (int)str_replace('admin_check_test_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT file_id, role FROM submitted_tests WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -695,7 +783,25 @@ if ($callbackQuery) {
         $testFile = $stmt->fetch();
 
         if ($testFile) {
-            $tg->sendDocument($userId, $testFile['file_id'], "📄 فایل تست حل شده داوطلب برای نقش <b>" . getRoleFarsiAdmin($testFile['role']) . "</b>");
+            $rawFileId = $testFile['file_id'];
+            $fileType  = 'doc'; // پیش‌فرض
+            $cleanFileId = $rawFileId;
+
+            // تشخیص نوع فایل بر اساس پیشوند پویا
+            if (strpos($rawFileId, ':') !== false) {
+                $parts = explode(':', $rawFileId, 2);
+                $fileType    = $parts[0];
+                $cleanFileId = $parts[1];
+            }
+
+            $caption = "📄 فایل تست حل شده داوطلب برای نقش <b>" . getRoleFarsiAdmin($testFile['role']) . "</b>";
+
+            // انتخاب متد منطبق بر اساس پیشوند تفکیک‌کننده
+            if ($fileType === 'photo') {
+                $tg->sendPhoto($userId, $cleanFileId, $caption);
+            } else {
+                $tg->sendDocument($userId, $cleanFileId, $caption);
+            }
         } else {
             $tg->sendMessage($userId, "❌ فایل یافت نشد.");
         }
@@ -704,14 +810,23 @@ if ($callbackQuery) {
 
     // ۱۰. باز شدن موتور تعاملی پیام مستقیم ادمین به داوطلب
     elseif (strpos($callbackData, 'admin_msg_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $targetId = str_replace('admin_msg_', '', $callbackData);
         FSM::setStep($botId, $userId, "admin_send_msg_{$targetId}");
-        $tg->sendMessage($userId, "✍️ <b>لطفاً پیام خود را خطاب به داوطلب استخدام تایپ کنید و بفرستید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>لطفاً پیام خود را خطاب به داوطلب استخدام تایپ کنید و بفرستید:</b>\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۱۱. رد کردن مستقیم تست داوطلب
     elseif (strpos($callbackData, 'admin_reject_test_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $testId = (int)str_replace('admin_reject_test_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT user_id, role FROM submitted_tests WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -733,6 +848,7 @@ if ($callbackQuery) {
 
     // ۱۲. تایید استخدام و ارسال خودکار لینک دعوت یک‌بار مصرف
     elseif (strpos($callbackData, 'admin_accept_test_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $testId = (int)str_replace('admin_accept_test_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT user_id, role FROM submitted_tests WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -783,6 +899,7 @@ if ($callbackQuery) {
 
     // ۱۳. ورود به بخش تنظیمات تیم مانهوا
     elseif ($callbackData === 'admin_settings') {
+        $tg->answerCallbackQuery($callbackId);
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -813,6 +930,7 @@ if ($callbackQuery) {
 
     // کالبک منوی تنظیمات عمومی
     elseif ($callbackData === 'admin_general_settings') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'settings')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای مدیریت تنظیمات عمومی را ندارید.");
             exit;
@@ -829,17 +947,26 @@ if ($callbackQuery) {
 
     // آغاز فرآیند تغییر روزهای اخطار رکود
     elseif ($callbackData === 'admin_set_warning_days') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'warning')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای تغییر روزهای هشدار عدم فعالیت را ندارید.");
             exit;
         }
         FSM::setStep($botId, $userId, 'admin_waiting_warning_days');
-        $tg->sendMessage($userId, "✍️ <b>تعداد روزهای راکد ماندن پروژه (قبل از ارسال هشدار خودکار در گروه) را به عدد وارد کنید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>تعداد روزهای راکد ماندن پروژه (قبل از ارسال هشدار خودکار در گروه) را به عدد وارد کنید:</b>\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // منوی آزمون‌های تمرینی/دلخواه اعضا
     elseif ($callbackData === 'admin_manage_exams') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'exams')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای مدیریت آزمون‌های تمرینی را ندارید.");
             exit;
@@ -856,6 +983,7 @@ if ($callbackQuery) {
 
     // ثبت آزمون تمرینی جدید (انتخاب نقش)
     elseif ($callbackData === 'admin_add_practice_exam') {
+        $tg->answerCallbackQuery($callbackId);
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -874,6 +1002,7 @@ if ($callbackQuery) {
 
     // دریافت فایل آزمون تمرینی جدید
     elseif (strpos($callbackData, 'admin_select_exam_role_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $examRole = str_replace('admin_select_exam_role_', '', $callbackData);
         
         // ذخیره موقت نقش آزمون در دیتابیس برای استفاده در مرحله بعد
@@ -881,12 +1010,20 @@ if ($callbackQuery) {
         $stmt->execute(['bot_id' => $botId, 'value' => $examRole]);
 
         FSM::setStep($botId, $userId, 'admin_waiting_exam_file');
-        $tg->sendMessage($userId, "📥 <b>لطفاً فایل یا تصویر آزمون تمرینی را ارسال کنید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "📥 <b>لطفاً فایل یا تصویر آزمون تمرینی را ارسال کنید:</b>\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // دکمه پاسخ به تیکت پشتیبانی کاربر
     elseif (strpos($callbackData, 'admin_reply_ticket_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $ticketId = (int)str_replace('admin_reply_ticket_', '', $callbackData);
         
         if (!hasPermission($db, $botId, $userId, 'tickets')) {
@@ -895,12 +1032,20 @@ if ($callbackQuery) {
         }
 
         FSM::setStep($botId, $userId, "admin_waiting_ticket_reply_{$ticketId}");
-        $tg->sendMessage($userId, "✍️ <b>لطفاً پاسخ خود به این تیکت را بنویسید و ارسال کنید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>لطفاً پاسخ خود به این تیکت را بنویسید و ارسال کنید:</b>\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // سوئیچ و تغییر سطح دسترسی ادمین (Permissions Switcher)
     elseif (strpos($callbackData, 'toggle_perm_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         // برای تغییر دسترسی بقیه ادمین‌ها حتما باید کاربر مالک کل مانهوا (owner) باشد
         $stmtCheckOwner = $db->prepare("SELECT role FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
         $stmtCheckOwner->execute(['bot_id' => $botId, 'tg_id' => $userId]);
@@ -939,6 +1084,7 @@ if ($callbackQuery) {
 
     // ۱۴. نمایش صفحه ویرایش حقوق‌ها
     elseif ($callbackData === 'admin_salary_rates') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'settings')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای مدیریت نرخ‌های مالی مانهوا را ندارید.");
             exit;
@@ -974,14 +1120,23 @@ if ($callbackQuery) {
 
     // ۱۵. آغاز فرآیند ویرایش نرخ دستمزد یک نقش خاص
     elseif (strpos($callbackData, 'admin_change_rate_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
         $roleToSetRate = str_replace('admin_change_rate_', '', $callbackData);
         FSM::setStep($botId, $userId, "admin_waiting_rate_{$roleToSetRate}");
-        $tg->sendMessage($userId, "✍️ <b>لطفاً مبلغ جدید حقوق به ازای هر چپتر را برای " . getRoleFarsiAdmin($roleToSetRate) . " به عدد (به تومان) وارد کنید:</b>");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>لطفاً مبلغ جدید حقوق به ازای هر چپتر را برای " . getRoleFarsiAdmin($roleToSetRate) . " به عدد (به تومان) وارد کنید:</b>\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۱۶. نمایش پرکارترین اعضای تیم
     elseif ($callbackData === 'admin_most_active') {
+        $tg->answerCallbackQuery($callbackId);
         $stmt = $db->prepare("
             SELECT full_name, role, total_chapters 
             FROM users 
@@ -1010,6 +1165,7 @@ if ($callbackQuery) {
 
     // ۱۷. نمایش آمار مالی کلان مانهوا
     elseif ($callbackData === 'admin_team_info') {
+        $tg->answerCallbackQuery($callbackId);
         $stmtCount = $db->prepare("SELECT COUNT(*) as total_m FROM manhwas WHERE bot_id = :bot_id");
         $stmtCount->execute(['bot_id' => $botId]);
         $totalManhwas = $stmtCount->fetch()['total_m'];
@@ -1035,35 +1191,60 @@ if ($callbackQuery) {
 
     // ۱۸. فرستادن پیام همگانی به کل گروه‌ها
     elseif ($callbackData === 'admin_broadcast') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'broadcast')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای ارسال پیام‌های همگانی گروهی را ندارید.");
             exit;
         }
         FSM::setStep($botId, $userId, 'admin_waiting_broadcast_groups');
-        $tg->sendMessage($userId, "✍️ <b>لطفاً پیام همگانی ادمین را بنویسید:</b>\n\nاین پیام به صورت اتوماتیک به تمامی گروه‌های تلگرامی متصل به پروژه‌های فعال شما ارسال خواهد شد.");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "✍️ <b>لطفاً پیام همگانی ادمین را بنویسید:</b>\n\nاین پیام به صورت اتوماتیک به تمامی گروه‌های تلگرامی متصل به پروژه‌های فعال شما ارسال خواهد شد.\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۱۹. ارتقا به ادمین مانهوا
     elseif ($callbackData === 'admin_add_admin') {
+        $tg->answerCallbackQuery($callbackId);
         if (!hasPermission($db, $botId, $userId, 'add_admin')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای مدیریت و افزودن ادمین جدید را ندارید.");
             exit;
         }
         FSM::setStep($botId, $userId, 'admin_waiting_add_admin_id');
-        $tg->sendMessage($userId, "🛡️ <b>لطفاً آیدی عددی تلگرام کاربر مورد نظر جهت ارتقا به ادمین را بفرستید:</b>\n\nپس از وارد کردن آیدی عددی، پنل تعیین سطح دسترسی ده‌گانه برای شما باز می‌شود.");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "🛡️ <b>لطفاً آیدی عددی تلگرام کاربر مورد نظر جهت ارتقا به ادمین را بفرستید:</b>\n\nپس از وارد کردن آیدی عددی، پنل تعیین سطح دسترسی ده‌گانه برای شما باز می‌شود.\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۲۰. ست کردن آیدی گروه اصلی
     elseif ($callbackData === 'admin_set_team_group') {
+        $tg->answerCallbackQuery($callbackId);
         FSM::setStep($botId, $userId, 'admin_waiting_team_group_id');
-        $tg->sendMessage($userId, "🔗 <b>لطفاً آیدی عددی گروه تلگرام اصلی تیم خود را بفرستید:</b>\n\nبرای این کار ربات را در گروه تیم ادمین کنید و آیدی آن را (که عددی منفی بزرگ است مثل <code>-100123456789</code>) کپی کرده و در اینجا بفرستید:");
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_cancel']]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "🔗 <b>لطفاً آیدی عددی گروه تلگرام اصلی تیم خود را بفرستید:</b>\n\nبرای این کار ربات را در گروه تیم ادمین کنید و آیدی آن را (که عددی منفی بزرگ است مثل <code>-100123456789</code>) کپی کرده و در اینجا بفرستید:\n\n💡 جهت انصراف دکمه زیر را لمس کنید:", $keyboard);
         exit;
     }
 
     // ۲۱. نمایش لیست کامل اعضای تیم
     elseif ($callbackData === 'admin_team_list') {
+        $tg->answerCallbackQuery($callbackId);
         $stmt = $db->prepare("
             SELECT full_name, role, total_chapters, monthly_chapters, total_earned, joined_at 
             FROM users 
