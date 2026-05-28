@@ -125,261 +125,306 @@ if (!function_exists('showAdminPermissionsPanel')) {
 }
 
 // ==========================================
-// فاز ۲: پردازش وضعیت‌های ورودی متنی FSM ادمین
+// فاز ۲: پردازش گام‌های ورودی متنی FSM ادمین
 // ==========================================
-if ($message && !empty($message['text'])) {
-    $text = trim($message['text']);
+if ($message) {
+    $text = isset($message['text']) ? trim($message['text']) : '';
 
-    // ثبت قوانین جدید استخدام
-    if ($step === 'admin_waiting_rules') {
-        $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'rules', :rules) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
-        $stmt->execute(['bot_id' => $botId, 'rules' => $text]);
-
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ <b>شرایط و قوانین استخدام با موفقیت به‌روزرسانی شد.</b>", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_recruit']]]
-        ]);
-        exit;
-    }
-
-    // تنظیم روزهای مجاز راکد ماندن پروژه‌ها قبل اخطار
-    elseif ($step === 'admin_waiting_warning_days') {
-        if (!is_numeric($text) || (int)$text <= 0) {
-            $tg->sendMessage($userId, "❌ لطفاً فقط عدد صحیح بزرگتر از صفر وارد کنید:");
-            exit;
-        }
-
-        $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'inactivity_warning_days', :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
-        $stmt->execute(['bot_id' => $botId, 'value' => $text]);
-
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ <b>روزهای راکد ماندن مانهواها با موفقیت روی {$text} روز تنظیم شد.</b>", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_general_settings']]]
-        ]);
-        exit;
-    }
-
-    // دریافت نرخ مبالغ حقوق
-    elseif (strpos($step, 'admin_waiting_rate_') === 0) {
-        $roleToUpdate = str_replace('admin_waiting_rate_', '', $step);
-        
-        if (!is_numeric($text) || (int)$text < 0) {
-            $tg->sendMessage($userId, "❌ لطفاً فقط عدد بزرگ‌تر از صفر وارد کنید:");
-            exit;
-        }
-
-        $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, :key, :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
-        $stmt->execute([
-            'bot_id' => $botId,
-            'key'    => "rate_{$roleToUpdate}",
-            'value'  => $text
-        ]);
-
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ <b>نرخ دستمزد " . getRoleFarsiAdmin($roleToUpdate) . " به {$text} تومان تغییر یافت.</b>", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت به نرخ‌ها', 'callback_data' => 'admin_salary_rates']]]
-        ]);
-        exit;
-    }
-
-    // ارسال پاسخ تیکت پشتیبانی به کاربر
-    elseif (strpos($step, 'admin_waiting_ticket_reply_') === 0) {
-        $ticketId = (int)str_replace('admin_waiting_ticket_reply_', '', $step);
-
-        // واکشی مشخصات تیکت جهت پیدا کردن کاربر فرستنده تیکت
-        $stmtT = $db->prepare("SELECT user_id FROM tickets WHERE bot_id = :bot_id AND id = :id LIMIT 1");
-        $stmtT->execute(['bot_id' => $botId, 'id' => $ticketId]);
-        $ticket = $stmtT->fetch();
-
-        if ($ticket) {
-            // آپدیت وضعیت تیکت به بسته شده (مختومه) پس از پاسخ
-            $stmtUpdateTicket = $db->prepare("UPDATE tickets SET status = 'closed' WHERE bot_id = :bot_id AND id = :id");
-            $stmtUpdateTicket->execute(['bot_id' => $botId, 'id' => $ticketId]);
-
-            // ارسال پیام پاسخ به پی‌وی کاربر
-            $userNotify = "✉️ <b>پاسخ مدیریت تیم مانهوا به تیکت پشتیبانی شما (#{$ticketId}):</b>\n\n" . $text;
-            $tg->sendMessage($ticket['user_id'], $userNotify);
+    // پردازش پیام‌های متنی
+    if (!empty($text)) {
+        // ثبت قوانین جدید استخدام
+        if ($step === 'admin_waiting_rules') {
+            $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'rules', :rules) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
+            $stmt->execute(['bot_id' => $botId, 'rules' => $text]);
 
             FSM::clearStep($botId, $userId);
-            $tg->sendMessage($userId, "✅ <b>پاسخ تیکت با موفقیت ارسال شد و وضعیت تیکت به «مختومه» تغییر یافت.</b>");
-        } else {
-            $tg->sendMessage($userId, "❌ تیکت یافت نشد.");
-        }
-        exit;
-    }
-
-    // ارسال پیام مستقیم به کاربر عادی با آیدی عددی
-    elseif (strpos($step, 'admin_send_msg_') === 0) {
-        $targetUserId = (int)str_replace('admin_send_msg_', '', $step);
-
-        $sent = $tg->sendMessage($targetUserId, "✉️ <b>پیام مدیریت تیم مانهوا برای شما:</b>\n\n" . $text);
-        
-        FSM::clearStep($botId, $userId);
-        if ($sent && isset($sent['ok']) && $sent['ok'] === true) {
-            $tg->sendMessage($userId, "✅ پیام شما با موفقیت برای کاربر ارسال شد.");
-        } else {
-            $tg->sendMessage($userId, "❌ خطا در ارسال پیام. احتمالاً کاربر ربات را بلاک کرده است.");
-        }
-        exit;
-    }
-
-    // ثبت آیدی عددی گروه مانهوا اصلی جهت تولید لینک‌های دعوت
-    elseif ($step === 'admin_waiting_team_group_id') {
-        if (!is_numeric($text)) {
-            $tg->sendMessage($userId, "❌ آیدی عددی گروه تلگرام باید عدد منفی بزرگ باشد:");
+            $tg->sendMessage($userId, "✅ <b>شرایط و قوانین استخدام با موفقیت به‌روزرسانی شد.</b>", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_recruit']]]
+            ]);
             exit;
         }
 
-        $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'team_group_id', :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
-        $stmt->execute(['bot_id' => $botId, 'value' => $text]);
-
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ <b>آیدی عددی گروه اصلی با موفقیت ثبت شد.</b>", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_settings']]]
-        ]);
-        exit;
-    }
-
-    // ثبت ادمین جدید و نمایش پنل سطوح دسترسی دهگانه
-    elseif ($step === 'admin_waiting_add_admin_id') {
-        if (!is_numeric($text)) {
-            $tg->sendMessage($userId, "❌ آیدی عددی تلگرام فقط باید عدد باشد:");
-            exit;
-        }
-
-        $stmt = $db->prepare("SELECT * FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
-        $stmt->execute(['bot_id' => $botId, 'tg_id' => (int)$text]);
-        $targetUser = $stmt->fetch();
-
-        if (!$targetUser) {
-            $tg->sendMessage($userId, "❌ کاربری با این آیدی عددی هنوز ربات را استارت نکرده است.");
-            exit;
-        }
-
-        FSM::setRole($botId, (int)$text, 'admin');
-        FSM::setStatus($botId, (int)$text, 'approved');
-        FSM::clearStep($botId, $userId);
-
-        // ارسال پیام ارتقا به کاربر هدف
-        $tg->sendMessage((int)$text, "🎉 <b>شما توسط مدیریت مانهوا به مقام ادمین ارتقا یافتید.</b>\n\nدستور <code>/start</code> را ارسال کنید تا پنل دسترسی‌ها فعال شود.");
-        
-        // باز کردن پنل سطوح دسترسی برای ست کردن گزینه‌ها
-        showAdminPermissionsPanel($db, $tg, $botId, (int)$text, $userId);
-        exit;
-    }
-
-    // فرستادن پیام همگانی به تمام گروه‌های متصل به پروژه‌ها
-    elseif ($step === 'admin_waiting_broadcast_groups') {
-        $stmt = $db->prepare("SELECT DISTINCT group_id FROM manhwas WHERE bot_id = :bot_id AND group_id IS NOT NULL");
-        $stmt->execute(['bot_id' => $botId]);
-        $groups = $stmt->fetchAll();
-
-        if (empty($groups)) {
-            $tg->sendMessage($userId, "⚠️ هیچ گروه تلگرامی به پروژه‌های فعال شما متصل نشده است.");
-            exit;
-        }
-
-        $successCount = 0;
-        foreach ($groups as $group) {
-            $sent = $tg->sendMessage($group['group_id'], "📢 <b>پیام همگانی ادمین کل برای تیم:</b>\n\n" . $text);
-            if ($sent && isset($sent['ok']) && $sent['ok'] === true) {
-                $successCount++;
+        // تنظیم روزهای مجاز راکد ماندن پروژه‌ها قبل اخطار
+        elseif ($step === 'admin_waiting_warning_days') {
+            if (!is_numeric($text) || (int)$text <= 0) {
+                $tg->sendMessage($userId, "❌ لطفاً فقط عدد صحیح بزرگتر از صفر وارد کنید:");
+                exit;
             }
+
+            $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'inactivity_warning_days', :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
+            $stmt->execute(['bot_id' => $botId, 'value' => $text]);
+
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ <b>روزهای راکد ماندن مانهواها با موفقیت روی {$text} روز تنظیم شد.</b>", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_general_settings']]]
+            ]);
+            exit;
         }
 
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ پیام شما با موفقیت به <code>{$successCount}</code> گروه ارسال شد.", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_settings']]]
-        ]);
-        exit;
-    }
+        // دریافت نرخ جدید حقوق برای نقش‌ها
+        elseif (strpos($step, 'admin_waiting_rate_') === 0) {
+            $roleToUpdate = str_replace('admin_waiting_rate_', '', $step);
+            
+            if (!is_numeric($text) || (int)$text < 0) {
+                $tg->sendMessage($userId, "❌ لطفاً فقط عدد بزرگ‌تر از صفر وارد کنید:");
+                exit;
+            }
 
-    // انتساب مستقیم اعضا به پروژه‌ها
-    elseif (strpos($step, 'admin_waiting_assign_') === 0) {
-        $paramsStr = str_replace('admin_waiting_assign_', '', $step);
-        $parts     = explode('_', $paramsStr);
-        $manhwaId  = (int)$parts[0];
-        $roleToSet = $parts[1];
+            $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, :key, :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
+            $stmt->execute([
+                'bot_id' => $botId,
+                'key'    => "rate_{$roleToUpdate}",
+                'value'  => $text
+            ]);
 
-        $targetUser = null;
-        if (strpos($text, '@') === 0) {
-            $searchUser = str_replace('@', '', $text);
-            $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
-            $stmt->execute(['bot_id' => $botId, 'username' => $searchUser]);
-            $targetUser = $stmt->fetch();
-        } elseif (is_numeric($text)) {
-            $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ <b>نرخ دستمزد " . getRoleFarsiAdmin($roleToUpdate) . " به {$text} تومان تغییر یافت.</b>", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به نرخ‌ها', 'callback_data' => 'admin_salary_rates']]]
+            ]);
+            exit;
+        }
+
+        // ارسال پاسخ تیکت پشتیبانی به کاربر
+        elseif (strpos($step, 'admin_waiting_ticket_reply_') === 0) {
+            $ticketId = (int)str_replace('admin_waiting_ticket_reply_', '', $step);
+
+            // واکشی مشخصات تیکت جهت پیدا کردن کاربر فرستنده تیکت
+            $stmtT = $db->prepare("SELECT user_id FROM tickets WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+            $stmtT->execute(['bot_id' => $botId, 'id' => $ticketId]);
+            $ticket = $stmtT->fetch();
+
+            if ($ticket) {
+                // آپدیت وضعیت تیکت به بسته شده (مختومه) پس از پاسخ
+                $stmtUpdateTicket = $db->prepare("UPDATE tickets SET status = 'closed' WHERE bot_id = :bot_id AND id = :id");
+                $stmtUpdateTicket->execute(['bot_id' => $botId, 'id' => $ticketId]);
+
+                // ارسال پیام پاسخ به پی‌وی کاربر
+                $userNotify = "✉️ <b>پاسخ مدیریت تیم مانهوا به تیکت پشتیبانی شما (#{$ticketId}):</b>\n\n" . $text;
+                $tg->sendMessage($ticket['user_id'], $userNotify);
+
+                FSM::clearStep($botId, $userId);
+                $tg->sendMessage($userId, "✅ <b>پاسخ تیکت با موفقیت ارسال شد و وضعیت تیکت به «مختومه» تغییر یافت.</b>");
+            } else {
+                $tg->sendMessage($userId, "❌ تیکت یافت نشد.");
+            }
+            exit;
+        }
+
+        // ارسال پیام مستقیم به کاربر عادی با آیدی عددی
+        elseif (strpos($step, 'admin_send_msg_') === 0) {
+            $targetUserId = (int)str_replace('admin_send_msg_', '', $step);
+
+            $sent = $tg->sendMessage($targetUserId, "✉️ <b>پیام مدیریت تیم مانهوا برای شما:</b>\n\n" . $text);
+            
+            FSM::clearStep($botId, $userId);
+            if ($sent && isset($sent['ok']) && $sent['ok'] === true) {
+                $tg->sendMessage($userId, "✅ پیام شما با موفقیت برای کاربر ارسال شد.");
+            } else {
+                $tg->sendMessage($userId, "❌ خطا در ارسال پیام. احتمالاً کاربر ربات را بلاک کرده است.");
+            }
+            exit;
+        }
+
+        // ثبت آیدی عددی گروه مانهوا اصلی جهت تولید لینک‌های دعوت
+        elseif ($step === 'admin_waiting_team_group_id') {
+            if (!is_numeric($text)) {
+                $tg->sendMessage($userId, "❌ آیدی عددی گروه تلگرام باید عدد منفی بزرگ باشد:");
+                exit;
+            }
+
+            $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'team_group_id', :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
+            $stmt->execute(['bot_id' => $botId, 'value' => $text]);
+
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ <b>آیدی عددی گروه اصلی با موفقیت ثبت شد.</b>", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_settings']]]
+            ]);
+            exit;
+        }
+
+        // ثبت ادمین جدید و نمایش پنل سطوح دسترسی دهگانه
+        elseif ($step === 'admin_waiting_add_admin_id') {
+            if (!is_numeric($text)) {
+                $tg->sendMessage($userId, "❌ آیدی عددی تلگرام فقط باید عدد باشد:");
+                exit;
+            }
+
+            $stmt = $db->prepare("SELECT * FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
             $stmt->execute(['bot_id' => $botId, 'tg_id' => (int)$text]);
             $targetUser = $stmt->fetch();
-        }
 
-        if (!$targetUser) {
-            $tg->sendMessage($userId, "❌ کاربری با این مشخصات یافت نشد. لطفاً آیدی عددی معتبر یا آیدی کاربری تلگرام (با @) بفرستید:");
+            if (!$targetUser) {
+                $tg->sendMessage($userId, "❌ کاربری با این آیدی عددی هنوز ربات را استارت نکرده است.");
+                exit;
+            }
+
+            FSM::setRole($botId, (int)$text, 'admin');
+            FSM::setStatus($botId, (int)$text, 'approved');
+            FSM::clearStep($botId, $userId);
+
+            // ارسال پیام ارتقا به کاربر هدف
+            $tg->sendMessage((int)$text, "🎉 <b>شما توسط مدیریت مانهوا به مقام ادمین ارتقا یافتید.</b>\n\nدستور <code>/start</code> را ارسال کنید تا پنل دسترسی‌ها فعال شود.");
+            
+            // باز کردن پنل سطوح دسترسی برای ست کردن گزینه‌ها
+            showAdminPermissionsPanel($db, $tg, $botId, (int)$text, $userId);
             exit;
         }
 
-        $stmtDelete = $db->prepare("DELETE FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :manhwa_id AND role = :role");
-        $stmtDelete->execute(['bot_id' => $botId, 'manhwa_id' => $manhwaId, 'role' => $roleToSet]);
+        // فرستادن پیام همگانی به تمام گروه‌های متصل به پروژه‌ها
+        elseif ($step === 'admin_waiting_broadcast_groups') {
+            $stmt = $db->prepare("SELECT DISTINCT group_id FROM manhwas WHERE bot_id = :bot_id AND group_id IS NOT NULL");
+            $stmt->execute(['bot_id' => $botId]);
+            $groups = $stmt->fetchAll();
 
-        $stmtInsert = $db->prepare("INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) VALUES (:bot_id, :manhwa_id, :role, :user_id)");
-        $stmtInsert->execute([
-            'bot_id'    => $botId,
-            'manhwa_id' => $manhwaId,
-            'role'      => $roleToSet,
-            'user_id'   => $targetUser['tg_id']
-        ]);
+            if (empty($groups)) {
+                $tg->sendMessage($userId, "⚠️ هیچ گروه تلگرامی به پروژه‌های فعال شما متصل نشده است.");
+                exit;
+            }
 
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ کاربر <b>{$targetUser['full_name']}</b> با موفقیت به عنوان <b>" . getRoleFarsiAdmin($roleToSet) . "</b> این پروژه منتسب شد.", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_view_manhwa_{$manhwaId}"]]]
-        ]);
+            $successCount = 0;
+            foreach ($groups as $group) {
+                $sent = $tg->sendMessage($group['group_id'], "📢 <b>پیام همگانی ادمین کل برای تیم:</b>\n\n" . $text);
+                if ($sent && isset($sent['ok']) && $sent['ok'] === true) {
+                    $successCount++;
+                }
+            }
+
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ پیام شما با موفقیت به <code>{$successCount}</code> گروه ارسال شد.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_settings']]]
+            ]);
+            exit;
+        }
+
+        // انتساب مستقیم اعضا به پروژه‌ها
+        elseif (strpos($step, 'admin_waiting_assign_') === 0) {
+            $paramsStr = str_replace('admin_waiting_assign_', '', $step);
+            $parts     = explode('_', $paramsStr);
+            $manhwaId  = (int)$parts[0];
+            $roleToSet = $parts[1];
+
+            $targetUser = null;
+            if (strpos($text, '@') === 0) {
+                $searchUser = str_replace('@', '', $text);
+                $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
+                $stmt->execute(['bot_id' => $botId, 'username' => $searchUser]);
+                $targetUser = $stmt->fetch();
+            } elseif (is_numeric($text)) {
+                $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+                $stmt->execute(['bot_id' => $botId, 'tg_id' => (int)$text]);
+                $targetUser = $stmt->fetch();
+            }
+
+            if (!$targetUser) {
+                $tg->sendMessage($userId, "❌ کاربری با این مشخصات یافت نشد. لطفاً آیدی عددی معتبر یا آیدی کاربری تلگرام (با @) بفرستید:");
+                exit;
+            }
+
+            $stmtDelete = $db->prepare("DELETE FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :manhwa_id AND role = :role");
+            $stmtDelete->execute(['bot_id' => $botId, 'manhwa_id' => $manhwaId, 'role' => $roleToSet]);
+
+            $stmtInsert = $db->prepare("INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) VALUES (:bot_id, :manhwa_id, :role, :user_id)");
+            $stmtInsert->execute([
+                'bot_id'    => $botId,
+                'manhwa_id' => $manhwaId,
+                'role'      => $roleToSet,
+                'user_id'   => $targetUser['tg_id']
+            ]);
+
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ کاربر <b>{$targetUser['full_name']}</b> با موفقیت به عنوان <b>" . getRoleFarsiAdmin($roleToSet) . "</b> این پروژه منتسب شد.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_view_manhwa_{$manhwaId}"]]]
+            ]);
+            exit;
+        }
+
+        // ثبت عنوان برای آزمون تمرینی جدید پس از دریافت فایل داکیومنت
+        elseif (strpos($step, 'admin_waiting_exam_title_') === 0) {
+            $stepParts = explode('_', $step);
+            $examRole  = $stepParts[4];
+            $examFile  = $stepParts[5];
+
+            $stmtIns = $db->prepare("
+                INSERT INTO practice_exams (bot_id, role, title, file_id, instructions)
+                VALUES (:bot_id, :role, :title, :file_id, :instructions)
+            ");
+            $stmtIns->execute([
+                'bot_id'       => $botId,
+                'role'         => $examRole,
+                'title'        => $text, // متن فرستاده شده به عنوان عنوان آزمون ذخیره می‌شود
+                'file_id'      => $examFile,
+                'instructions' => 'آزمون تمرینی و دلخواه برای اعضای رسمی جهت ارزیابی و بهبود مهارت.'
+            ]);
+
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ <b>آزمون تمرینی جدید با موفقیت در دیتابیس ثبت شد.</b>", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به منو', 'callback_data' => 'admin_manage_exams']]]
+            ]);
+            exit;
+        }
+
+        // دریافت قوانین تست و ذخیره نهایی در جدول test_templates دیتابیس نئون
+        elseif (strpos($step, 'admin_waiting_rec_test_rules_') === 0) {
+            $stepParts = explode('_', $step);
+            // ساختار گام: admin_waiting_rec_test_rules_ROLE_FILEID
+            $recRole = $stepParts[5];
+            $recFile = $stepParts[6];
+
+            $stmt = $db->prepare("
+                INSERT INTO test_templates (bot_id, role, file_id, instructions)
+                VALUES (:bot_id, :role, :file_id, :instructions)
+                ON CONFLICT (bot_id, role) DO UPDATE 
+                SET file_id = EXCLUDED.file_id, instructions = EXCLUDED.instructions
+            ");
+            $stmt->execute([
+                'bot_id'       => $botId,
+                'role'         => $recRole,
+                'file_id'      => $recFile,
+                'instructions' => $text
+            ]);
+
+            FSM::clearStep($botId, $userId);
+            $tg->sendMessage($userId, "✅ <b>فایل تست استخدامی به همراه قوانین اختصاصی آن برای نقش " . getRoleFarsiAdmin($recRole) . " با موفقیت ثبت شد.</b>", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_recruit']]]
+            ]);
+            exit;
+        }
+    }
+
+    // فرآیند بارگزاری فایل آزمون تمرینی جدید
+    if ($step === 'admin_waiting_exam_file') {
+        $fileId = $message['document']['file_id'] ?? $message['photo'][0]['file_id'] ?? null;
+        
+        if (!$fileId) {
+            $tg->sendMessage($userId, "❌ فایل ارسالی معتبر نیست. لطفاً یک فایل سند یا تصویر بفرستید:");
+            exit;
+        }
+
+        // گرفتن نقش انتخابی که قبلاً در سشن یا وضعیت ثبت شده بود
+        $stmtRole = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'temp_exam_role' LIMIT 1");
+        $stmtRole->execute(['bot_id' => $botId]);
+        $roleRow = $stmtRole->fetch();
+        $examRole = $roleRow ? $roleRow['value'] : 'translator';
+
+        FSM::setStep($botId, $userId, "admin_waiting_exam_title_{$examRole}_{$fileId}");
+        $tg->sendMessage($userId, "✍️ <b>فایل آزمون دریافت شد.</b>\n\nحالا یک عنوان مناسب برای این آزمون بنویسید و ارسال کنید:");
         exit;
     }
 
-    // ثبت عنوان برای آزمون تمرینی جدید پس از دریافت فایل داکیومنت
-    elseif (strpos($step, 'admin_waiting_exam_title_') === 0) {
-        $stepParts = explode('_', $step);
-        $examRole  = $stepParts[4];
-        $examFile  = $stepParts[5];
+    // هندل دریافت فایل تست استخدامی
+    if (strpos($step, 'admin_waiting_rec_test_file_') === 0) {
+        $recRole = str_replace('admin_waiting_rec_test_file_', '', $step);
+        $fileId = $message['document']['file_id'] ?? $message['photo'][0]['file_id'] ?? null;
+        
+        if (!$fileId) {
+            $tg->sendMessage($userId, "❌ فایل ارسالی معتبر نیست. لطفاً یک فایل سند یا تصویر بفرستید:");
+            exit;
+        }
 
-        $stmtIns = $db->prepare("
-            INSERT INTO practice_exams (bot_id, role, title, file_id, instructions)
-            VALUES (:bot_id, :role, :title, :file_id, :instructions)
-        ");
-        $stmtIns->execute([
-            'bot_id'       => $botId,
-            'role'         => $examRole,
-            'title'        => $text, // متن فرستاده شده به عنوان عنوان آزمون ذخیره می‌شود
-            'file_id'      => $examFile,
-            'instructions' => 'آزمون تمرینی و دلخواه برای اعضای رسمی جهت ارزیابی و بهبود مهارت.'
-        ]);
-
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ <b>آزمون تمرینی جدید با موفقیت در دیتابیس ثبت شد.</b>", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت به منو', 'callback_data' => 'admin_manage_exams']]]
-        ]);
+        FSM::setStep($botId, $userId, "admin_waiting_rec_test_rules_{$recRole}_{$fileId}");
+        $tg->sendMessage($userId, "✍️ <b>فایل تست استخدام دریافت شد.</b>\n\nحالا قوانین و توضیحات اختصاصی که می‌خواهید کاربر هنگام دریافت این تست مشاهده کند (مثال: نحوه ارسال، فرمت فایل و مهلت حل تست) را بنویسید و بفرستید:");
         exit;
     }
-}
-
-// فرآیند بارگزاری فایل آزمون تمرینی جدید
-if ($message && $step === 'admin_waiting_exam_file') {
-    $fileId = $message['document']['file_id'] ?? $message['photo'][0]['file_id'] ?? null;
-    
-    if (!$fileId) {
-        $tg->sendMessage($userId, "❌ فایل ارسالی معتبر نیست. لطفاً یک فایل یا تصویر به عنوان آزمون بفرستید:");
-        exit;
-    }
-
-    // گرفتن نقش انتخابی که قبلاً در سشن یا وضعیت ثبت شده بود
-    $stmtRole = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'temp_exam_role' LIMIT 1");
-    $stmtRole->execute(['bot_id' => $botId]);
-    $roleRow = $stmtRole->fetch();
-    $examRole = $roleRow ? $roleRow['value'] : 'translator';
-
-    FSM::setStep($botId, $userId, "admin_waiting_exam_title_{$examRole}_{$fileId}");
-    $tg->sendMessage($userId, "✍️ <b>فایل آزمون دریافت شد.</b>\n\nحالا یک عنوان مناسب برای این آزمون بنویسید و ارسال کنید:");
-    exit;
 }
 
 // ==========================================
@@ -515,7 +560,7 @@ if ($callbackQuery) {
         $stmt->execute(['bot_id' => $botId, 'manhwa_id' => $mId, 'role' => $role]);
 
         $tg->sendMessage($userId, "✅ عزل " . getRoleFarsiAdmin($role) . " با موفقیت انجام شد.", [
-            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_view_manhwa_{$mId}"]]]
+            'inline_keyboard' => [[['text' => '🔙 بازگشت به مانهوا', 'callback_data' => "admin_view_manhwa_{$mId}"]]]
         ]);
         exit;
     }
@@ -545,12 +590,43 @@ if ($callbackQuery) {
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '📂 آخرین تست‌های حل شده', 'callback_data' => 'admin_view_tests']],
+                [['text' => '📤 آپلود تست استخدامی جدید', 'callback_data' => 'admin_upload_rec_test']],
                 [['text' => '⚙️ تغییر شرایط و قوانین استخدام', 'callback_data' => 'admin_edit_rules']],
                 [['text' => '🔙 بازگشت به منوی ادمین', 'callback_data' => 'admin_back_to_menu']]
             ]
         ];
         
         $tg->sendMessage($userId, "👥 بخش استخدام و عضوگیری مانهوا:", $keyboard);
+        exit;
+    }
+
+    // کالبک شروع آپلود تست استخدامی
+    elseif ($callbackData === 'admin_upload_rec_test') {
+        if (!hasPermission($db, $botId, $userId, 'recruit')) {
+            $tg->sendMessage($userId, "⚠️ شما دسترسی لازم را ندارید.");
+            exit;
+        }
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '📝 تست استخدام مترجم', 'callback_data' => 'admin_set_rec_test_translator'],
+                    ['text' => '🖌 تست استخدام کلینر', 'callback_data' => 'admin_set_rec_test_cleaner']
+                ],
+                [
+                    ['text' => '⌨️ تست استخدام تایپیست', 'callback_data' => 'admin_set_rec_test_typesetter']
+                ],
+                [['text' => '🔙 بازگشت', 'callback_data' => 'admin_recruit']]
+            ]
+        ];
+        $tg->sendMessage($userId, "📥 <b>آپلود تست استخدامی جدید:</b>\n\nمشخص کنید این فایل تست استخدام مربوط به کدام نقش است:", $keyboard);
+        exit;
+    }
+
+    // تغییر مرحله FSM برای دریافت فایل تست استخدام
+    elseif (strpos($callbackData, 'admin_set_rec_test_') === 0) {
+        $recRole = str_replace('admin_set_rec_test_', '', $callbackData);
+        FSM::setStep($botId, $userId, "admin_waiting_rec_test_file_{$recRole}");
+        $tg->sendMessage($userId, "📥 <b>لطفاً فایل تست استخدام برای نقش " . getRoleFarsiAdmin($recRole) . " را بفرستید:</b>");
         exit;
     }
 
@@ -762,7 +838,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // منوی آزمون‌های دلخواه/تمرینی اعضا
+    // منوی آزمون‌های تمرینی/دلخواه اعضا
     elseif ($callbackData === 'admin_manage_exams') {
         if (!hasPermission($db, $botId, $userId, 'exams')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای مدیریت آزمون‌های تمرینی را ندارید.");
@@ -1023,7 +1099,7 @@ if ($callbackQuery) {
 // ==========================================
 // فاز ۴: استارت اولیه پنل ادمین
 // ==========================================
-if ($message && $message['text'] === '/start') {
+if ($message && isset($message['text']) && $message['text'] === '/start') {
     FSM::clearStep($botId, $userId);
 
     $keyboard = [
