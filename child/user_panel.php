@@ -5,7 +5,7 @@
  * Role: Full Member & Guest Dashboard Processor (Recruitment, Support Tickets, Practice Exams, Cancel System)
  */
 
-// اطمینان از صحت کانتکست و متغیرهای تعریف شده در index.php و child/router.php
+// ۱. اطمینان از صحت کانتکست و متغیرهای تعریف شده در index.php و child/router.php
 if (!isset($botContext) || !isset($tg) || !isset($user) || !isset($db)) {
     exit;
 }
@@ -91,7 +91,7 @@ if ($text === '/cancel' || $text === 'لغو' || (isset($callbackQuery) && $call
         // بازگرداندن کاربران مهمان به صفحه ورود استخدام
         $keyboard = [
             'inline_keyboard' => [
-                [['text' => '🤝 عضویت در تیم مانهوا مانپین', 'callback_data' => 'join_team']]
+                [['text' => '🤝 عضویت در تیم مانهوا', 'callback_data' => 'join_team']]
             ]
         ];
         
@@ -148,7 +148,7 @@ if (strpos($step, 'waiting_test_') === 0) {
         exit;
     }
 
-    // اطلاع‌رسانی خودکار به مالکین و ادمین‌های این ربات (اصلاح تداخل SQL)
+    // اطلاع‌رسانی خودکار به مالکین و ادمین‌های این ربات (اصلاح تداخل SQL و به کار بردن OR به جای ||)
     $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner')");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
@@ -200,7 +200,7 @@ elseif (strpos($step, 'user_typing_ticket_') === 0) {
         exit;
     }
 
-    // اطلاع‌رسانی به ادمین هدف یا کلیه ادمین‌ها (اصلاح تداخل SQL)
+    // اطلاع‌رسانی به ادمین هدف یا کلیه ادمین‌ها (اصلاح تداخل SQL و استفاده از OR)
     $notifyAdmins = [];
     if ($assignedAdminId) {
         $notifyAdmins[] = $assignedAdminId;
@@ -259,7 +259,7 @@ elseif (strpos($step, 'user_waiting_exam_solve_') === 0) {
     FSM::clearStep($botId, $userId);
     $tg->sendMessage($userId, "✅ <b>پاسخ آزمون حل شده تمرینی شما با موفقیت برای ادمین‌های ارشد ارسال شد. خسته نباشید!</b>");
 
-    // هدایت خودکار فایل آزمون حل شده به ادمین‌ها (اصلاح تداخل SQL)
+    // هدایت خودکار فایل آزمون حل شده به ادمین‌های ربات جهت بررسی و منتورینگ (اصلاح تداخل SQL)
     $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner')");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
@@ -303,7 +303,7 @@ if ($message && $text === '/start') {
     } else {
         $keyboard = [
             'inline_keyboard' => [
-                [['text' => '🤝 عضویت در تیم مانهوا مانپین', 'callback_data' => 'join_team']]
+                [['text' => '🤝 عضویت در تیم مانهوا', 'callback_data' => 'join_team']]
             ]
         ];
         
@@ -424,7 +424,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۵. دکمه میزان حقوق (کیف پول اعضا)
+    // ۵. دکمه میزان حقوق (مخصوص اعضای تایید شده)
     elseif ($callbackData === 'member_salary') {
         $tg->answerCallbackQuery($callbackId);
         $earned  = number_format($user['total_earned'] ?? 0);
@@ -447,7 +447,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۶. دکمه کارها و مانهواهای منتسب شده به کاربر
+    // ۶. دکمه کارها و مانهواهای منتسب شده به کاربر (مخصوص اعضا)
     elseif ($callbackData === 'member_tasks') {
         $tg->answerCallbackQuery($callbackId);
         $stmt = $db->prepare("
