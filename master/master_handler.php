@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: master/master_handler.php
- * Role: Master Bot Processor with Advanced Real-time Owner Statistics
+ * Role: Master Bot Processor with Real-time DB and Error-free Analytics
  */
 
 // بررسی کانتکست و جلوگیری از خطای دسترسی غیرمجاز
@@ -34,7 +34,9 @@ $step = $user['step'] ?? 'idle';
 // بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل هلدینگ است یا خیر
 $isSystemOwner = ($userId === OWNER_ID);
 
+// ==========================================
 // ۲. پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
+// ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
     $callbackId   = $callbackQuery['id'];
@@ -102,7 +104,7 @@ if ($callbackQuery) {
     // کالبک راهنمای ساخت ربات
     elseif ($callbackData === 'master_help') {
         $helpText = "❓ <b>راهنمای گام‌به‌گام ساخت ربات مدیریت مانهوا:</b>\n\n"
-                  . "💡 پس از ثبت موفق، وارد ربات مانهوای خود شده و <code>/start</code> بزنید تا به عنوان مدیر کل تیم، کنترل پنل شیشه‌ای مانهوا را ببینید.";
+                  . "💡 پس از ثبت موفق، وارد ربات مانهوای خود شده و <code>/start</code> بزنید تا به عنوان ادمین کل تیم، کنترل پنل شیشه‌ای مانهوا را ببینید.";
         
         $keyboard = [
             'inline_keyboard' => [
@@ -136,7 +138,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // کالبک اختصاصی مالک: مانیتورینگ زنده و نمایش ۲۲ شاخص آماری کل سرور به صورت تفکیک‌شده
+    // کالبک اختصاصی مالک: مانیتورینگ زنده و نمایش ۲۲ شاخص آماری کل سرور به صورت تفکیک‌شده (بدون خطا)
     elseif ($callbackData === 'master_owner_stats' && $isSystemOwner) {
         
         // کوئری ۱: تحلیل کاربران کل ربات‌ها با روش تجمیع شرطی
@@ -166,14 +168,14 @@ if ($callbackQuery) {
         $stmtManhwaStats->execute();
         $mStats = $stmtManhwaStats->fetch();
 
-        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم
+        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم (با استفاده از مقادیر ایمن و Coalesce)
         $stmtChapterStats = $db->prepare("
             SELECT 
                 COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_chapters,
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_chapters,
-                COALESCE(SUM(CASE WHEN status = 'approved' THEN translator_pay END), 0) as pay_translators,
-                COALESCE(SUM(CASE WHEN status = 'approved' THEN cleaner_pay END), 0) as pay_cleaners,
-                COALESCE(SUM(CASE WHEN status = 'approved' THEN typesetter_pay END), 0) as pay_typesetters
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN translator_pay ELSE 0 END), 0) as pay_translators,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN cleaner_pay ELSE 0 END), 0) as pay_cleaners,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN typesetter_pay ELSE 0 END), 0) as pay_typesetters
             FROM chapters;
         ");
         $stmtChapterStats->execute();
@@ -247,7 +249,9 @@ if ($callbackQuery) {
     }
 }
 
+// ==========================================
 // ۳. پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
+// ==========================================
 if (!empty($text)) {
     // دستور استارت ربات‌ساز اصلی
     if ($text === '/start') {
@@ -261,7 +265,7 @@ if (!empty($text)) {
         ];
 
         $welcome = "سلام <b>{$fullName}</b> گرامی!\n"
-                 . "به ربات‌ساز بزرگ <b>تیم مانهوا مانپین</b> خوش آمدید.\n\n"
+                 . "به ربات‌ساز بزرگ <b>تیم مانهوا</b> خوش آمدید.\n\n"
                  . "با این سیستم می‌توانید ربات پیشرفته اختصاصی خود را جهت مدیریت مانهوا، ترجمه، تایپ، کلینرها، محاسبه حقوق و سازماندهی کارهای تیم خود بسازید.\n\n"
                  . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
