@@ -2,13 +2,13 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/admin_panel.php
- * Role: Full Advanced Admin Panel Processor with Dynamic Pagination, Search, Custom Rates, Ticket System, Exams & Member Tools
+ * Role: Full Advanced Admin Panel Processor with Pagination, Search, Manual Member Import, Ticket System & Multi-staff Tools
  */
 
-// لود سیستم‌های مالی و حسابرسی هوشمند
+// ۱. لود خودکار موتور تسویه حساب، پایش مانهوا و سیستم ریست ماهانه
 require_once __DIR__ . '/salary_system.php';
 
-// اطمینان از صحت کانتکست لود شده در بدنه دروازه اصلی
+// اطمینان از صحت کانتکست و متغیرها
 if (!isset($botContext) || !isset($tg) || !isset($user) || !isset($db)) {
     exit;
 }
@@ -23,13 +23,10 @@ $message       = $botContext['update']['message'] ?? null;
 $callbackQuery = $botContext['update']['callback_query'] ?? null;
 
 // ==========================================
-// بخش ۱: توابع کمکی ادمین
+// فاز ۱: توابع کمکی و اعتبارسنجی سطوح دسترسی
 // ==========================================
 
 if (!function_exists('getRoleFarsiAdmin')) {
-    /**
-     * معادل‌سازی فارسی سمت‌های تیم مانهوا
-     */
     function getRoleFarsiAdmin($roleName) {
         $roles = [
             'translator' => 'مترجم',
@@ -45,10 +42,10 @@ if (!function_exists('getRoleFarsiAdmin')) {
 
 if (!function_exists('hasPermission')) {
     /**
-     * بررسی هوشمند سطوح دسترسی ۱۰گانه در دیتابیس نئون (با پشتیبانی کامل از مالک کل)
+     * بررسی هوشمند دسترسی ادمین بر اساس سطوح ۱۰گانه در دیتابیس نئون
      */
     function hasPermission($db, $botId, $userId, $permName) {
-        // مالک ربات به طور پیش‌فرض به تمام بخش‌ها دسترسی مطلق دارد
+        // مالک اصلی ربات به صورت پیش‌فرض به تمام بخش‌ها دسترسی دارد
         $stmtUser = $db->prepare("SELECT role FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
         $stmtUser->execute(['bot_id' => $botId, 'tg_id' => $userId]);
         $userRow = $stmtUser->fetch();
@@ -58,6 +55,7 @@ if (!function_exists('hasPermission')) {
 
         $dbField = "perm_" . $permName;
         $whitelist = ['recruit', 'manhwa', 'team', 'salary', 'settings', 'broadcast', 'add_admin', 'tickets', 'exams', 'warning'];
+        
         if (!in_array($permName, $whitelist)) {
             return false;
         }
@@ -71,7 +69,7 @@ if (!function_exists('hasPermission')) {
 
 if (!function_exists('showAdminPermissionsPanel')) {
     /**
-     * ترسیم پنل شیشه‌ای تنظیم دسترسی‌های ۱۰گانه ادمین هدف
+     * ترسیم پنل شیشه‌ای تنظیم سطوح دسترسی ۱۰گانه برای یک ادمین
      */
     function showAdminPermissionsPanel($db, $tg, $botId, $targetAdminId, $chatId, $messageId = null) {
         $stmt = $db->prepare("SELECT * FROM admin_permissions WHERE bot_id = :bot_id AND user_id = :user_id LIMIT 1");
@@ -84,6 +82,7 @@ if (!function_exists('showAdminPermissionsPanel')) {
             $perms = $stmtIns->fetch();
         }
 
+        // واکشی نام ادمین جهت نمایش
         $stmtU = $db->prepare("SELECT full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
         $stmtU->execute(['bot_id' => $botId, 'tg_id' => $targetAdminId]);
         $uRow = $stmtU->fetch();
@@ -92,12 +91,12 @@ if (!function_exists('showAdminPermissionsPanel')) {
         $keyboard = [
             'inline_keyboard' => [
                 [
-                    ['text' => ($perms['perm_recruit'] ? '✅' : '❌') . ' ۱. استخدام', 'callback_data' => "toggle_perm_{$targetAdminId}_recruit"],
+                    ['text' => ($perms['perm_recruit'] ? '✅' : '❌') . ' ۱. استخدام/عضوگیری', 'callback_data' => "toggle_perm_{$targetAdminId}_recruit"],
                     ['text' => ($perms['perm_manhwa'] ? '✅' : '❌') . ' ۲. ثبت مانهوا', 'callback_data' => "toggle_perm_{$targetAdminId}_manhwa"]
                 ],
                 [
                     ['text' => ($perms['perm_team'] ? '✅' : '❌') . ' ۳. انتساب پروژه', 'callback_data' => "toggle_perm_{$targetAdminId}_team"],
-                    ['text' => ($perms['perm_salary'] ? '✅' : '❌') . ' ۴. تایید حقوق', 'callback_data' => "toggle_perm_{$targetAdminId}_salary"]
+                    ['text' => ($perms['perm_salary'] ? '✅' : '❌') . ' ۴. تایید حقوق/چپتر', 'callback_data' => "toggle_perm_{$targetAdminId}_salary"]
                 ],
                 [
                     ['text' => ($perms['perm_settings'] ? '✅' : '❌') . ' ۵. نرخ‌های دستمزد', 'callback_data' => "toggle_perm_{$targetAdminId}_settings"],
@@ -115,7 +114,7 @@ if (!function_exists('showAdminPermissionsPanel')) {
             ]
         ];
 
-        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای تغییر وضعیت دسترسی‌ها، روی هر گزینه کلیک فرمایید:";
+        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای فعال یا غیرفعال کردن هر دسترسی، روی گزینه مربوطه کلیک کنید:";
 
         if ($messageId) {
             $tg->editMessageText($chatId, $messageId, $text, $keyboard);
@@ -126,12 +125,12 @@ if (!function_exists('showAdminPermissionsPanel')) {
 }
 
 // ==========================================
-// بخش ۲: پردازش گام‌های متنی و فایلی FSM ادمین
+// فاز ۲: پردازش وضعیت‌های ورودی متنی و فایلی FSM ادمین
 // ==========================================
 if ($message) {
     $text = isset($message['text']) ? trim($message['text']) : '';
 
-    // سیستم لغو عمومی عملیات ادمین
+    // سیستم لغو عمومی عملیات جاری از طریق دستور متنی
     if ($text === '/cancel' || $text === 'لغو' || (isset($callbackQuery) && $callbackQuery['data'] === 'admin_cancel')) {
         FSM::clearStep($botId, $userId);
         
@@ -151,6 +150,7 @@ if ($message) {
         exit;
     }
 
+    // پردازش پیام‌های متنی FSM ادمین
     if (!empty($text)) {
         // جستجوی مانهوا در لیست پروژه‌ها
         if ($step === 'admin_waiting_project_search') {
@@ -196,7 +196,128 @@ if ($message) {
             exit;
         }
 
-        // دریافت شرایط و قوانین جدید استخدام عمومی
+        // گام FSM جستجوی دستی عضو و پرسش برای انتساب نقش
+        elseif ($step === 'admin_waiting_manual_search') {
+            FSM::clearStep($botId, $userId);
+            $input = trim($text);
+            $targetUser = null;
+
+            if (strpos($input, '@') === 0) {
+                $searchUser = str_replace('@', '', $input);
+                $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
+                $stmt->execute(['bot_id' => $botId, 'username' => $searchUser]);
+                $targetUser = $stmt->fetch();
+            } elseif (is_numeric($input)) {
+                $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+                $stmt->execute(['bot_id' => $botId, 'tg_id' => (int)$input]);
+                $targetUser = $stmt->fetch();
+            } else {
+                $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
+                $stmt->execute(['bot_id' => $botId, 'username' => $input]);
+                $targetUser = $stmt->fetch();
+            }
+
+            if (!$targetUser) {
+                $tg->sendMessage($userId, "❌ کاربری با این مشخصات یافت نشد. مطمئن شوید که کاربر ابتدا ربات را استارت کرده است.", [
+                    'inline_keyboard' => [[['text' => '🔙 بازگشت به منو دستی', 'callback_data' => 'admin_manual_recruit_menu']]]
+                ]);
+            } else {
+                $keyboard = [
+                    'inline_keyboard' => [
+                        [
+                          ['text' => '📝 مترجم', 'callback_data' => "admin_set_man_role_{$targetUser['tg_id']}_translator"],
+                          ['text' => '🖌 کلینر', 'callback_data' => "admin_set_man_role_{$targetUser['tg_id']}_cleaner"]
+                        ],
+                        [
+                          ['text' => '⌨️ تایپیست', 'callback_data' => "admin_set_man_role_{$targetUser['tg_id']}_typesetter"]
+                        ],
+                        [['text' => '❌ لغو عملیات', 'callback_data' => 'admin_manual_recruit_menu']]
+                    ]
+                ];
+                $tg->sendMessage($userId, "👤 کاربر <b>{$targetUser['full_name']}</b> یافت شد.\n\nلطفاً نقش مورد نظر جهت انتساب مستقیم این فرد به تیم را انتخاب کنید:", $keyboard);
+            }
+            exit;
+        }
+
+        // گام FSM ثبت گروهی اعضا به صورت جدول متنی
+        elseif ($step === 'admin_waiting_manual_table_input') {
+            FSM::clearStep($botId, $userId);
+            $lines = explode("\n", $text);
+            $successCount = 0;
+            $failedEntries = [];
+
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if (empty($line)) continue;
+
+                $parts = explode('|', $line);
+                if (count($parts) !== 2) {
+                    $failedEntries[] = $line . " (فرمت اشتباه - خط چین | یافت نشد)";
+                    continue;
+                }
+
+                $inputUser = trim($parts[0]);
+                $inputRole = trim($parts[1]);
+
+                $roleSlug = '';
+                $cleanRole = mb_strtolower($inputRole);
+                if ($cleanRole === 'مترجم' || $cleanRole === 'translator') {
+                    $roleSlug = 'translator';
+                } elseif ($cleanRole === 'کلینر' || $cleanRole === 'cleaner') {
+                    $roleSlug = 'cleaner';
+                } elseif ($cleanRole === 'تایپیست' || $cleanRole === 'تایپ' || $cleanRole === 'typesetter') {
+                    $roleSlug = 'typesetter';
+                } else {
+                    $failedEntries[] = $line . " (شغل نامعتبر است)";
+                    continue;
+                }
+
+                $targetUser = null;
+                if (strpos($inputUser, '@') === 0) {
+                    $searchUser = str_replace('@', '', $inputUser);
+                    $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
+                    $stmt->execute(['bot_id' => $botId, 'username' => $searchUser]);
+                    $targetUser = $stmt->fetch();
+                } elseif (is_numeric($inputUser)) {
+                    $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+                    $stmt->execute(['bot_id' => $botId, 'tg_id' => (int)$inputUser]);
+                    $targetUser = $stmt->fetch();
+                } else {
+                    $stmt = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
+                    $stmt->execute(['bot_id' => $botId, 'username' => $inputUser]);
+                    $targetUser = $stmt->fetch();
+                }
+
+                if (!$targetUser) {
+                    $failedEntries[] = $line . " (کاربر ربات را استارت نزده است)";
+                    continue;
+                }
+
+                FSM::setRole($botId, $targetUser['tg_id'], $roleSlug);
+                FSM::setStatus($botId, $targetUser['tg_id'], 'approved');
+
+                $roleFarsi = getRoleFarsiAdmin($roleSlug);
+                $tg->sendMessage($targetUser['tg_id'], "🎉 <b>تبریک می‌گویم! شما توسط مدیریت مستقیماً به عنوان عضو رسمی با سمت «{$roleFarsi}» به تیم اضافه شدید.</b>\n\nدستور <code>/start</code> را ارسال کنید تا پنل کاربری شما فعال شود.");
+                $successCount++;
+            }
+
+            $reportText = "📋 <b>نتیجه ثبت دستی اعضا به صورت جدول:</b>\n\n"
+                        . "✅ تعداد ثبت موفق: <code>{$successCount}</code> عضو جدید به تیم اضافه شدند.\n\n";
+
+            if (!empty($failedEntries)) {
+                $reportText .= "⚠️ <b>لیست موارد ناموفق (اشتباه):</b>\n";
+                foreach ($failedEntries as $fe) {
+                    $reportText .= "❌ " . htmlspecialchars($fe) . "\n";
+                }
+            }
+
+            $tg->sendMessage($userId, $reportText, [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به منوی عضوگیری', 'callback_data' => 'admin_recruit']]]
+            ]);
+            exit;
+        }
+
+        // ثبت قوانین جدید استخدام
         elseif ($step === 'admin_waiting_rules') {
             $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'rules', :rules) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
             $stmt->execute(['bot_id' => $botId, 'rules' => $text]);
@@ -208,7 +329,7 @@ if ($message) {
             exit;
         }
 
-        // تنظیم روزهای مجاز راکد ماندن پروژه‌ها
+        // تنظیم روزهای مجاز راکد ماندن پروژه‌ها قبل اخطار
         elseif ($step === 'admin_waiting_warning_days') {
             if (!is_numeric($text) || (int)$text <= 0) {
                 $tg->sendMessage($userId, "❌ لطفاً فقط عدد صحیح بزرگتر از صفر وارد کنید:");
@@ -225,7 +346,7 @@ if ($message) {
             exit;
         }
 
-        // دریافت نرخ دستمزد عمومی برای نقش‌ها
+        // دریافت نرخ جدید حقوق برای نقش‌ها
         elseif (strpos($step, 'admin_waiting_rate_') === 0) {
             $roleToUpdate = str_replace('admin_waiting_rate_', '', $step);
             
@@ -244,75 +365,6 @@ if ($message) {
             FSM::clearStep($botId, $userId);
             $tg->sendMessage($userId, "✅ <b>نرخ دستمزد " . getRoleFarsiAdmin($roleToUpdate) . " به {$text} تومان تغییر یافت.</b>", [
                 'inline_keyboard' => [[['text' => '🔙 بازگشت به نرخ‌ها', 'callback_data' => 'admin_salary_rates']]]
-            ]);
-            exit;
-        }
-
-        // ثبت دلیل رد چپتر مانهوا
-        elseif (strpos($step, 'admin_waiting_reject_reason_') === 0) {
-            $chapterId = (int)str_replace('admin_waiting_reject_reason_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $stmt = $db->prepare("SELECT c.*, m.group_id, m.title FROM chapters c JOIN manhwas m ON c.manhwa_id = m.id WHERE c.bot_id = :bot_id AND c.id = :id LIMIT 1");
-            $stmt->execute(['bot_id' => $botId, 'id' => $chapterId]);
-            $chapter = $stmt->fetch();
-
-            if ($chapter) {
-                $stmtUpdate = $db->prepare("UPDATE chapters SET status = 'rejected' WHERE bot_id = :bot_id AND id = :id");
-                $stmtUpdate->execute(['bot_id' => $botId, 'id' => $chapterId]);
-
-                if (!empty($chapter['group_id'])) {
-                    $rejectAlert = "❌ <b>چپتر {$chapter['chapter_num']} مانهوای «{$chapter['title']}» تایید نشد.</b>\n\n⚠️ <b>دلیل رد توسط مدیریت:</b>\n<i>{$text}</i>\n\nتایپیست محترم لطفا فایل اصلاح‌شده را مجدداً ارسال فرمایید.";
-                    $tg->sendMessage($chapter['group_id'], $rejectAlert);
-                }
-
-                if (!empty($chapter['typesetter_id'])) {
-                    $tg->sendMessage($chapter['typesetter_id'], "❌ کار شما روی چپتر {$chapter['chapter_num']} مانهوای «{$chapter['title']}» رد شد.\nدلیل: {$text}");
-                }
-
-                $tg->sendMessage($userId, "✅ دلیل رد ثبت شد و برای گروه مانهوا ارسال گردید.");
-            }
-            exit;
-        }
-
-        // ثبت قیمت اختصاصی مانهوا - مترجم
-        elseif (strpos($step, 'admin_waiting_m_rate_trans_') === 0) {
-            $manhwaId = (int)str_replace('admin_waiting_m_rate_trans_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $stmt = $db->prepare("UPDATE manhwas SET rate_translator = :val WHERE bot_id = :bot_id AND id = :id");
-            $stmt->execute(['val' => (float)$text, 'bot_id' => $botId, 'id' => $manhwaId]);
-
-            $tg->sendMessage($userId, "✅ نرخ مترجم این مانهوا با موفقیت روی <b>" . number_format((float)$text) . "</b> تومان تنظیم شد.", [
-                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_m_set_{$manhwaId}"]]]
-            ]);
-            exit;
-        }
-
-        // ثبت قیمت اختصاصی مانهوا - کلینر
-        elseif (strpos($step, 'admin_waiting_m_rate_clean_') === 0) {
-            $manhwaId = (int)str_replace('admin_waiting_m_rate_clean_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $stmt = $db->prepare("UPDATE manhwas SET rate_cleaner = :val WHERE bot_id = :bot_id AND id = :id");
-            $stmt->execute(['val' => (float)$text, 'bot_id' => $botId, 'id' => $manhwaId]);
-
-            $tg->sendMessage($userId, "✅ نرخ کلینر این مانهوا با موفقیت روی <b>" . number_format((float)$text) . "</b> تومان تنظیم شد.", [
-                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_m_set_{$manhwaId}"]]]
-            ]);
-            exit;
-        }
-
-        // ثبت قیمت اختصاصی مانهوا - تایپیست
-        elseif (strpos($step, 'admin_waiting_m_rate_type_') === 0) {
-            $manhwaId = (int)str_replace('admin_waiting_m_rate_type_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $stmt = $db->prepare("UPDATE manhwas SET rate_typesetter = :val WHERE bot_id = :bot_id AND id = :id");
-            $stmt->execute(['val' => (float)$text, 'bot_id' => $botId, 'id' => $manhwaId]);
-
-            $tg->sendMessage($userId, "✅ نرخ تایپیست این مانهوا با موفقیت روی <b>" . number_format((float)$text) . "</b> تومان تنظیم شد.", [
-                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_m_set_{$manhwaId}"]]]
             ]);
             exit;
         }
@@ -340,25 +392,6 @@ if ($message) {
             exit;
         }
 
-        // پاسخ تیکت در پنل مدیریت اختصاصی تیکت‌ها
-        elseif (strpos($step, 'admin_waiting_ticket_response_') === 0) {
-            $ticketId = (int)str_replace('admin_waiting_ticket_response_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $stmt = $db->prepare("SELECT user_id FROM tickets WHERE bot_id = :bot_id AND id = :id LIMIT 1");
-            $stmt->execute(['bot_id' => $botId, 'id' => $ticketId]);
-            $ticket = $stmt->fetch();
-
-            if ($ticket) {
-                $stmtUp = $db->prepare("UPDATE tickets SET status = 'closed' WHERE bot_id = :bot_id AND id = :id");
-                $stmtUp->execute(['bot_id' => $botId, 'id' => $ticketId]);
-
-                $tg->sendMessage($ticket['user_id'], "✉️ <b>پاسخ تیکت شماره #{$ticketId} از طرف مدیریت:</b>\n\n{$text}");
-                $tg->sendMessage($userId, "✅ پاسخ شما با موفقیت به کاربر ارسال شد و وضعیت تیکت به «بسته شده» تغییر یافت.");
-            }
-            exit;
-        }
-
         // ارسال پیام مستقیم به کاربر عادی با آیدی عددی
         elseif (strpos($step, 'admin_send_msg_') === 0) {
             $targetUserId = (int)str_replace('admin_send_msg_', '', $step);
@@ -370,34 +403,6 @@ if ($message) {
                 $tg->sendMessage($userId, "✅ پیام شما با موفقیت برای کاربر ارسال شد.");
             } else {
                 $tg->sendMessage($userId, "❌ خطا در ارسال پیام. احتمالاً کاربر ربات را بلاک کرده است.");
-            }
-            exit;
-        }
-
-        // ثبت اخطار برای اعضای تیم
-        elseif (strpos($step, 'admin_waiting_warn_reason_') === 0) {
-            $targetUserId = (int)str_replace('admin_waiting_warn_reason_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $stmt = $db->prepare("UPDATE users SET warnings = warnings + 1 WHERE bot_id = :bot_id AND tg_id = :tg_id RETURNING warnings");
-            $stmt->execute(['bot_id' => $botId, 'tg_id' => $targetUserId]);
-            $newWarnCount = $stmt->fetch()['warnings'];
-
-            $tg->sendMessage($targetUserId, "⚠️ <b>اخطار انضباطی جدید برای شما ثبت شد!</b>\n\n💬 <b>دلیل اخطار:</b>\n<i>{$text}</i>\n\nتعداد کل اخطارهای شما: <code>{$newWarnCount}</code>");
-            $tg->sendMessage($userId, "✅ اخطار با موفقیت ثبت شد و پیام انضباطی برای کاربر فرستاده شد.");
-            exit;
-        }
-
-        // ارسال پیام مستقیم (DM) به کاربر در بخش جزئیات عضو
-        elseif (strpos($step, 'admin_waiting_dm_text_') === 0) {
-            $targetUserId = (int)str_replace('admin_waiting_dm_text_', '', $step);
-            FSM::clearStep($botId, $userId);
-
-            $sent = $tg->sendMessage($targetUserId, "✉️ <b>پیام مستقیم مدیریت:</b>\n\n{$text}");
-            if ($sent && isset($sent['ok']) && $sent['ok'] === true) {
-                $tg->sendMessage($userId, "✅ پیام شما مستقیماً به پی‌وی کاربر تحویل داده شد.");
-            } else {
-                $tg->sendMessage($userId, "❌ ارسال ناموفق بود. کاربر احتمالاً ربات را بلاک کرده است.");
             }
             exit;
         }
@@ -579,9 +584,125 @@ if ($message) {
             ]);
 
             FSM::clearStep($botId, $userId);
-            $tg->sendMessage($userId, "✅ <b>فایل تست استخدامی برای نقش " . getRoleFarsiAdmin($recRole) . " با موفقیت ثبت شد.</b>", [
+            $tg->sendMessage($userId, "✅ <b>فایل تست استخدامی به همراه قوانین اختصاصی آن برای نقش " . getRoleFarsiAdmin($recRole) . " با موفقیت ثبت شد.</b>", [
                 'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_recruit']]]
             ]);
+            exit;
+        }
+
+        // ثبت نهایی دلیل رد چپتر مانهوا
+        elseif (strpos($step, 'admin_waiting_reject_reason_') === 0) {
+            $chapterId = (int)str_replace('admin_waiting_reject_reason_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $stmt = $db->prepare("SELECT c.*, m.group_id, m.title FROM chapters c JOIN manhwas m ON c.manhwa_id = m.id WHERE c.bot_id = :bot_id AND c.id = :id LIMIT 1");
+            $stmt->execute(['bot_id' => $botId, 'id' => $chapterId]);
+            $chapter = $stmt->fetch();
+
+            if ($chapter) {
+                $stmtUpdate = $db->prepare("UPDATE chapters SET status = 'rejected' WHERE bot_id = :bot_id AND id = :id");
+                $stmtUpdate->execute(['bot_id' => $botId, 'id' => $chapterId]);
+
+                if (!empty($chapter['group_id'])) {
+                    $rejectAlert = "❌ <b>چپتر {$chapter['chapter_num']} مانهوای «{$chapter['title']}» تایید نشد.</b>\n\n⚠️ <b>دلیل رد توسط مدیریت:</b>\n<i>{$text}</i>\n\nتایپیست محترم لطفا فایل اصلاح‌شده را مجدداً ارسال فرمایید.";
+                    $tg->sendMessage($chapter['group_id'], $rejectAlert);
+                }
+
+                if (!empty($chapter['typesetter_id'])) {
+                    $tg->sendMessage($chapter['typesetter_id'], "❌ کار شما روی چپتر {$chapter['chapter_num']} مانهوای «{$chapter['title']}» رد شد.\nدلیل: {$text}");
+                }
+
+                $tg->sendMessage($userId, "✅ دلیل رد ثبت شد و برای گروه مانهوا ارسال گردید.");
+            }
+            exit;
+        }
+
+        // ثبت قیمت اختصاصی مانهوا - مترجم
+        elseif (strpos($step, 'admin_waiting_m_rate_trans_') === 0) {
+            $manhwaId = (int)str_replace('admin_waiting_m_rate_trans_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $stmt = $db->prepare("UPDATE manhwas SET rate_translator = :val WHERE bot_id = :bot_id AND id = :id");
+            $stmt->execute(['val' => (float)$text, 'bot_id' => $botId, 'id' => $manhwaId]);
+
+            $tg->sendMessage($userId, "✅ نرخ مترجم این مانهوا با موفقیت روی <b>" . number_format((float)$text) . "</b> تومان تنظیم شد.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_m_set_{$manhwaId}"]]]
+            ]);
+            exit;
+        }
+
+        // ثبت قیمت اختصاصی مانهوا - کلینر
+        elseif (strpos($step, 'admin_waiting_m_rate_clean_') === 0) {
+            $manhwaId = (int)str_replace('admin_waiting_m_rate_clean_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $stmt = $db->prepare("UPDATE manhwas SET rate_cleaner = :val WHERE bot_id = :bot_id AND id = :id");
+            $stmt->execute(['val' => (float)$text, 'bot_id' => $botId, 'id' => $manhwaId]);
+
+            $tg->sendMessage($userId, "✅ نرخ کلینر این مانهوا با موفقیت روی <b>" . number_format((float)$text) . "</b> تومان تنظیم شد.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_m_set_{$manhwaId}"]]]
+            ]);
+            exit;
+        }
+
+        // ثبت قیمت اختصاصی مانهوا - تایپیست
+        elseif (strpos($step, 'admin_waiting_m_rate_type_') === 0) {
+            $manhwaId = (int)str_replace('admin_waiting_m_rate_type_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $stmt = $db->prepare("UPDATE manhwas SET rate_typesetter = :val WHERE bot_id = :bot_id AND id = :id");
+            $stmt->execute(['val' => (float)$text, 'bot_id' => $botId, 'id' => $manhwaId]);
+
+            $tg->sendMessage($userId, "✅ نرخ تایپیست این مانهوا با موفقیت روی <b>" . number_format((float)$text) . "</b> تومان تنظیم شد.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => "admin_m_set_{$manhwaId}"]]]
+            ]);
+            exit;
+        }
+
+        // نوشتن پاسخ تیکت در پنل مدیریت تیکت‌ها
+        elseif (strpos($step, 'admin_waiting_ticket_response_') === 0) {
+            $ticketId = (int)str_replace('admin_waiting_ticket_response_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $stmt = $db->prepare("SELECT user_id FROM tickets WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+            $stmt->execute(['bot_id' => $botId, 'id' => $ticketId]);
+            $ticket = $stmt->fetch();
+
+            if ($ticket) {
+                $stmtUp = $db->prepare("UPDATE tickets SET status = 'closed' WHERE bot_id = :bot_id AND id = :id");
+                $stmtUp->execute(['bot_id' => $botId, 'id' => $ticketId]);
+
+                $tg->sendMessage($ticket['user_id'], "✉️ <b>پاسخ تیکت شماره #{$ticketId} از طرف مدیریت:</b>\n\n{$text}");
+                $tg->sendMessage($userId, "✅ پاسخ شما با موفقیت به کاربر ارسال شد و وضعیت تیکت به «بسته شده» تغییر یافت.");
+            }
+            exit;
+        }
+
+        // ثبت اخطار برای اعضای تیم در بخش جزئیات عضو
+        elseif (strpos($step, 'admin_waiting_warn_reason_') === 0) {
+            $targetUserId = (int)str_replace('admin_waiting_warn_reason_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $stmt = $db->prepare("UPDATE users SET warnings = warnings + 1 WHERE bot_id = :bot_id AND tg_id = :tg_id RETURNING warnings");
+            $stmt->execute(['bot_id' => $botId, 'tg_id' => $targetUserId]);
+            $newWarnCount = $stmt->fetch()['warnings'];
+
+            $tg->sendMessage($targetUserId, "⚠️ <b>اخطار انضباطی جدید برای شما ثبت شد!</b>\n\n💬 <b>دلیل اخطار:</b>\n<i>{$text}</i>\n\nتعداد کل اخطارهای شما: <code>{$newWarnCount}</code>");
+            $tg->sendMessage($userId, "✅ اخطار با موفقیت ثبت شد و پیام انضباطی برای کاربر فرستاده شد.");
+            exit;
+        }
+
+        // ارسال پیام مستقیم (DM) به کاربر در بخش جزئیات عضو
+        elseif (strpos($step, 'admin_waiting_dm_text_') === 0) {
+            $targetUserId = (int)str_replace('admin_waiting_dm_text_', '', $step);
+            FSM::clearStep($botId, $userId);
+
+            $sent = $tg->sendMessage($targetUserId, "✉️ <b>پیام مستقیم مدیریت:</b>\n\n{$text}");
+            if ($sent && isset($sent['ok']) && $sent['ok'] === true) {
+                $tg->sendMessage($userId, "✅ پیام شما مستقیماً به پی‌وی کاربر تحویل داده شد.");
+            } else {
+                $tg->sendMessage($userId, "❌ ارسال ناموفق بود. کاربر احتمالاً ربات را بلاک کرده است.");
+            }
             exit;
         }
     }
@@ -667,7 +788,7 @@ if ($message) {
 }
 
 // ==========================================
-// بخش ۳: پردازش دکمه‌های شیشه‌ای کالبک‌کوئری
+// فاز ۳: پردازش دکمه‌های شیشه‌ای کالبک‌کوئری ادمین
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -675,8 +796,116 @@ if ($callbackQuery) {
     $messageId    = $callbackQuery['message']['message_id'];
     $adminChatId  = $callbackQuery['message']['chat']['id'];
 
-    // منوی اصلی ادمین و لغو عمومی از طریق دکمه شیشه‌ای
-    if ($callbackData === 'admin_back_to_menu' || $callbackData === 'admin_cancel') {
+    // ۱. تایید نهایی بن کاربر (قرارگیری قبل از شرط عمومی usr_ban_ جهت رفع باگ تداخل دکمه‌ها)
+    if (strpos($callbackData, 'admin_usr_confirmban_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $targetUserId = (int)str_replace('admin_usr_confirmban_', '', $callbackData);
+
+        FSM::setStatus($botId, $targetUserId, 'banned');
+        FSM::setRole($botId, $targetUserId, 'none');
+
+        $stmtTeamGroup = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'team_group_id' LIMIT 1");
+        $stmtTeamGroup->execute(['bot_id' => $botId]);
+        $tgRow = $stmtTeamGroup->fetch();
+        $teamGroupId = $tgRow ? $tgRow['value'] : null;
+
+        $stmtGroups = $db->prepare("SELECT DISTINCT group_id FROM manhwas WHERE bot_id = :bot_id AND group_id IS NOT NULL");
+        $stmtGroups->execute(['bot_id' => $botId]);
+        $groups = $stmtGroups->fetchAll();
+
+        if ($teamGroupId) {
+            $tg->apiRequest('banChatMember', ['chat_id' => $teamGroupId, 'user_id' => $targetUserId]);
+        }
+        foreach ($groups as $g) {
+            $tg->apiRequest('banChatMember', ['chat_id' => $g['group_id'], 'user_id' => $targetUserId]);
+        }
+
+        $tg->sendMessage($userId, "✅ کاربر از تمام گروه‌ها و ربات با موفقیت بن و مسدود گردید.");
+        exit;
+    }
+
+    // ۲. نمایش تاییدیه قبل بن کاربر از تمام گروه‌ها
+    elseif (strpos($callbackData, 'admin_usr_ban_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $targetUserId = (int)str_replace('admin_usr_ban_', '', $callbackData);
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '✅ بله، بن شود', 'callback_data' => "admin_usr_confirmban_{$targetUserId}"],
+                    ['text' => '❌ لغو عملیات', 'callback_data' => "admin_user_v_{$targetUserId}"]
+                ]
+            ]
+        ];
+
+        $tg->sendMessage($userId, "⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر را اخراج و بن کنید؟</b>\n\nپس از تایید، کاربر از تمام گروه‌های مانهوا و گروه اصلی تیم اخراج و بن خواهد شد و دسترسی او به ربات قطع می‌گردد.", $keyboard);
+        exit;
+    }
+
+    // کالبک دکمه افزودن دستی عضو - نمایش زیرمنو
+    elseif ($callbackData === 'admin_manual_recruit_menu') {
+        $tg->answerCallbackQuery($callbackId);
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '🔍 جستجو و افزودن تک عضو', 'callback_data' => 'admin_manual_search']],
+                [['text' => '📋 جدول ثبت گروهی اعضا', 'callback_data' => 'admin_manual_table']],
+                [['text' => '🔙 بازگشت به عضوگیری', 'callback_data' => 'admin_recruit']]
+            ]
+        ];
+        $tg->sendMessage($userId, "⚙️ <b>بخش وارد کردن دستی اعضا به تیم:</b>\n\nیکی از شیوه‌های زیر را برای عضوگیری مستقیم پرسنل انتخاب کنید:", $keyboard);
+        exit;
+    }
+
+    // کالبک شروع جستجوی دستی عضو
+    elseif ($callbackData === 'admin_manual_search') {
+        $tg->answerCallbackQuery($callbackId);
+        FSM::setStep($botId, $userId, 'admin_waiting_manual_search');
+        $tg->sendMessage($userId, "👤 <b>لطفاً آیدی عددی تلگرام یا یوزرنیم کاربر مورد نظر را ارسال کنید:</b>\n\nکاربر ابتدا باید ربات را استارت کرده باشد.", [
+            'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manual_recruit_menu']]]
+        ]);
+        exit;
+    }
+
+    // کالبک شروع ثبت گروهی اعضا
+    elseif ($callbackData === 'admin_manual_table') {
+        $tg->answerCallbackQuery($callbackId);
+        FSM::setStep($botId, $userId, 'admin_waiting_manual_table_input');
+        $formatMsg = "📋 <b>جدول ثبت دستی پرسنل به صورت گروهی:</b>\n\n"
+                   . "لطفاً لیست کاربران را دقیقاً بر اساس الگو و کاراکتر <code>|</code> در یک پیام بنویسید و بفرستید:\n\n"
+                   . "<code>آیدی یا یوزرنیم|شغل</code>\n\n"
+                   . "💡 <b>مثال:</b>\n"
+                   . "<code>123456789|مترجم</code>\n"
+                   . "<code>@some_username|کلینر</code>\n"
+                   . "<code>@typesetter_username|تایپیست</code>\n\n"
+                   . "⚠️ نام شغل‌ها فقط می‌تواند شامل موارد زیر باشد:\n"
+                   . "«مترجم»، «کلینر»، «تایپیست»";
+        $tg->sendMessage($userId, $formatMsg, [
+            'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manual_recruit_menu']]]
+        ]);
+        exit;
+    }
+
+    // کالبک ثبت نهایی نقش دستی کاربر در جستجو
+    elseif (strpos($callbackData, 'admin_set_man_role_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $data = str_replace('admin_set_man_role_', '', $callbackData);
+        $parts = explode('_', $data);
+        $targetId = (int)$parts[0];
+        $roleToSet = $parts[1];
+
+        FSM::setRole($botId, $targetId, $roleToSet);
+        FSM::setStatus($botId, $targetId, 'approved');
+
+        $roleFarsi = getRoleFarsiAdmin($roleToSet);
+        $tg->sendMessage($targetId, "🎉 <b>تبریک می‌گویم! شما توسط مدیریت مستقیماً به عنوان عضو رسمی با سمت «{$roleFarsi}» به تیم اضافه شدید.</b>\n\nدستور <code>/start</code> را ارسال کنید تا پنل کاربری شما فعال شود.");
+        $tg->sendMessage($userId, "✅ نقش کاربر با موفقیت روی <b>{$roleFarsi}</b> قرار گرفت و عضویت او فعال شد.", [
+            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_recruit']]]
+        ]);
+        exit;
+    }
+
+    // بازگشت به منوی ادمین و لغو عمومی از طریق دکمه شیشه‌ای
+    elseif ($callbackData === 'admin_back_to_menu' || $callbackData === 'admin_cancel') {
         $tg->answerCallbackQuery($callbackId, "انجام شد.");
         FSM::clearStep($botId, $userId);
 
@@ -756,7 +985,6 @@ if ($callbackQuery) {
         $manhwa = $stmt->fetch();
 
         if ($manhwa) {
-            // دریافت جزئیات تمام اعضای متصل به این مانهوا
             $stmtTeam = $db->prepare("
                 SELECT ta.role, u.full_name, u.tg_id 
                 FROM team_assignments ta
@@ -904,6 +1132,7 @@ if ($callbackQuery) {
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '📂 آخرین تست‌های حل شده', 'callback_data' => 'admin_view_tests']],
+                [['text' => '➕ وارد کردن دستی عضو', 'callback_data' => 'admin_manual_recruit_menu']],
                 [['text' => '📤 آپلود تست استخدامی جدید', 'callback_data' => 'admin_upload_rec_test']],
                 [['text' => '⚙️ تغییر شرایط و قوانین استخدام', 'callback_data' => 'admin_edit_rules']],
                 [['text' => '🔙 بازگشت به منوی ادمین', 'callback_data' => 'admin_back_to_menu']]
@@ -1632,7 +1861,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ست کردن آیدی گروه اصلی
+    // ثبت آیدی گروه اصلی
     elseif ($callbackData === 'admin_set_team_group') {
         $tg->answerCallbackQuery($callbackId);
         FSM::setStep($botId, $userId, 'admin_waiting_team_group_id');
@@ -1802,52 +2031,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // فرآیند تایید بن و اخراج کامل کاربر از گروه و دیتابیس
-    elseif (strpos($callbackData, 'admin_usr_ban_') === 0) {
-        $tg->answerCallbackQuery($callbackId);
-        $targetUserId = (int)str_replace('admin_usr_ban_', '', $callbackData);
-
-        $keyboard = [
-            'inline_keyboard' => [
-                [
-                    ['text' => '✅ بله، بن شود', 'callback_data' => "admin_usr_ban_confirm_{$targetUserId}"],
-                    ['text' => '❌ لغو عملیات', 'callback_data' => "admin_user_v_{$targetUserId}"]
-                ]
-            ]
-        ];
-
-        $tg->sendMessage($userId, "⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر را اخراج و بن کنید؟</b>\n\nپس از تایید، کاربر از تمام گروه‌های مانهوا و گروه اصلی تیم اخراج و بن خواهد شد و دسترسی او به ربات قطع می‌گردد.", $keyboard);
-        exit;
-    }
-
-    // تایید و اجرای فیزیکی بن کاربر از تمام گروه‌ها
-    elseif (strpos($callbackData, 'admin_usr_ban_confirm_') === 0) {
-        $tg->answerCallbackQuery($callbackId);
-        $targetUserId = (int)str_replace('admin_usr_ban_confirm_', '', $callbackData);
-
-        FSM::setStatus($botId, $targetUserId, 'banned');
-        FSM::setRole($botId, $targetUserId, 'none');
-
-        $stmtTeamGroup = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'team_group_id' LIMIT 1");
-        $stmtTeamGroup->execute(['bot_id' => $botId]);
-        $tgRow = $stmtTeamGroup->fetch();
-        $teamGroupId = $tgRow ? $tgRow['value'] : null;
-
-        $stmtGroups = $db->prepare("SELECT DISTINCT group_id FROM manhwas WHERE bot_id = :bot_id AND group_id IS NOT NULL");
-        $stmtGroups->execute(['bot_id' => $botId]);
-        $groups = $stmtGroups->fetchAll();
-
-        if ($teamGroupId) {
-            $tg->apiRequest('banChatMember', ['chat_id' => $teamGroupId, 'user_id' => $targetUserId]);
-        }
-        foreach ($groups as $g) {
-            $tg->apiRequest('banChatMember', ['chat_id' => $g['group_id'], 'user_id' => $targetUserId]);
-        }
-
-        $tg->sendMessage($userId, "✅ کاربر از تمام گروه‌ها و ربات با موفقیت بن و مسدود گردید.");
-        exit;
-    }
-
     // مدیریت چپترها (مشاهده کارهای ارسالی با صفحه‌بندی ۱۰تایی)
     elseif (strpos($callbackData, 'admin_manage_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
@@ -1986,7 +2169,7 @@ if ($callbackQuery) {
 }
 
 // ==========================================
-// بخش ۴: استارت اولیه پنل ادمین
+// فاز ۴: استارت اولیه پنل ادمین
 // ==========================================
 if ($message && isset($message['text']) && $message['text'] === '/start') {
     FSM::clearStep($botId, $userId);
