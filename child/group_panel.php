@@ -1,458 +1,386 @@
 <?php
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
- * File: child/group_panel.php
- * Role: Group & Supergroup Command Processor with Multiple Staff Support & 6 New Advanced Commands
+ * File: master/master_handler.php
+ * Role: Master Bot Processor with Real-time DB and Error-free Analytics
  */
 
-// اطمینان از صحت متغیرها و کانتکست لود شده
-if (!isset($botContext) || !isset($tg) || !isset($user) || !isset($db)) {
+// بررسی کانتکست و جلوگیری از خطای دسترسی غیرمجاز
+if (!isset($botContext) || !$botContext['is_master']) {
     exit;
 }
 
-$chatId    = $message['chat']['id'] ?? $callbackQuery['message']['chat']['id'] ?? null;
-$userId    = $user['tg_id'];
-$fullName  = $user['full_name'];
-$username  = $user['username'] ?? '';
-$userRole  = $user['role'];
-$userStep  = $user['step'];
-$botId     = $botContext['bot_id'];
+$update = $botContext['update'];
+$db = DB::connect();
 
-$text    = $message['text'] ?? '';
-$caption = $message['caption'] ?? '';
+// نمونه‌سازی هِلپر تلگرام با توکن ربات‌ساز اصلی
+$tg = new Telegram(MASTER_BOT_TOKEN);
 
-$isAdminInGroup = ($userRole === 'owner' || $userRole === 'admin');
+// استخراج متغیرهای پیام یا کالبک‌کوئری
+$message       = $update['message'] ?? null;
+$callbackQuery = $update['callback_query'] ?? null;
 
-// تابع کمکی برای یافتن آیدی عددی کاربر بر اساس یوزرنیم یا آیدی عددی
-if (!function_exists('findUserByUsernameOrId')) {
-    function findUserByUsernameOrId($db, $botId, $input) {
-        $input = trim($input);
-        if (is_numeric($input)) {
-            $stmt = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
-            $stmt->execute(['bot_id' => $botId, 'tg_id' => (int)$input]);
-        } else {
-            $stmt = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND username = :username LIMIT 1");
-            $stmt->execute(['bot_id' => $botId, 'username' => $input]);
-        }
-        $row = $stmt->fetch();
-        return $row ? $row['tg_id'] : null;
-    }
+$userId    = $message['from']['id'] ?? $callbackQuery['from']['id'] ?? null;
+$username  = $message['from']['username'] ?? $callbackQuery['from']['username'] ?? null;
+$fullName  = trim(($message['from']['first_name'] ?? $callbackQuery['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? $callbackQuery['from']['last_name'] ?? ''));
+$text      = $message['text'] ?? '';
+
+if (!$userId) {
+    exit;
 }
 
-// ==========================================
-// ۱. فاز پردازش FSM گروهی (ثبت شناسنامه مانهوا با ارسال کاور و کپشن)
-// ==========================================
-if ($userStep === 'waiting_group_manhwa_info' && $isAdminInGroup) {
-    // مانهوا باید حتماً به صورت عکس و با کپشن ارسال شود
-    if (isset($message['photo']) && !empty($caption)) {
-        $coverFileId = end($message['photo'])['file_id'];
+// ۱. ثبت یا به‌روزرسانی مشخصات کاربر در زمینه ربات مادر (bot_id = 0)
+$user = FSM::initUser(0, $userId, $username, $fullName);
+$step = $user['step'] ?? 'idle';
 
-        // پارس کردن کپشن با استفاده از عبارات با قاعده (Regex)
-        preg_match('/اسم:\s*(.+)/u', $caption, $matchName);
-        preg_match('/خلاصه:\s*(.+)/u', $caption, $matchSummary);
-        preg_match('/ژانر:\s*(.+)/u', $caption, $matchGenres);
-
-        $title   = isset($matchName[1]) ? trim($matchName[1]) : '';
-        $summary = isset($matchSummary[1]) ? trim($matchSummary[1]) : '';
-        $genres  = isset($matchGenres[1]) ? trim($matchGenres[1]) : '';
-
-        if (empty($title) || empty($summary) || empty($genres)) {
-            $tg->sendMessage($chatId, "❌ <b>خطا در ثبت مانهوا!</b>\n\nمشخصات در کپشن تصویر به طور کامل یا با الگوی ارسالی انطباق ندارد. لطفاً عکس کاور را مجدداً ارسال کرده و کپشن را دقیقاً بر اساس فرمت زیر پر کنید:\n\n<code>اسم: نام مانهوا\nخلاصه: خلاصه داستان را اینجا بنویسید\nژانر: ژانرهای مانهوا</code>");
-            exit;
-        }
-
-        // بررسی اینکه آیا این گروه قبلاً به مانهوای دیگری متصل شده است یا خیر
-        $stmtCheck = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
-        $stmtCheck->execute(['bot_id' => $botId, 'group_id' => $chatId]);
-        $existing = $stmtCheck->fetch();
-
-        if ($existing) {
-            $tg->sendMessage($chatId, "⚠️ این گروه در حال حاضر به پروژه مانهوای <b>«{$existing['title']}»</b> متصل است. هر گروه فقط می‌تواند میزبان یک مانهوا باشد.");
-            FSM::clearStep($botId, $userId);
-            exit;
-        }
-
-        // ثبت مانهوا در دیتابیس نئون و تخصیص گروه جاری به آن
-        $stmtInsert = $db->prepare("
-            INSERT INTO manhwas (bot_id, title, cover_file_id, summary, genres, group_id)
-            VALUES (:bot_id, :title, :cover_file_id, :summary, :genres, :group_id)
-        ");
-        $stmtInsert->execute([
-            'bot_id'        => $botId,
-            'title'         => $title,
-            'cover_file_id' => $coverFileId,
-            'summary'       => $summary,
-            'genres'        => $genres,
-            'group_id'      => $chatId
-        ]);
-
-        FSM::clearStep($botId, $userId);
-        $tg->sendMessage($chatId, "✅ <b>پروژه مانهوا با موفقیت ثبت شد!</b>\n\n📚 نام: <b>{$title}</b>\n🎭 ژانرها: {$genres}\n🔗 این گروه با موفقیت به عنوان گروه رسمی این مانهوا ثبت شد.");
-        exit;
-    }
-}
+// بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل سیستم است یا خیر
+$isSystemOwner = ($userId === OWNER_ID);
 
 // ==========================================
-// ۲. فاز پردازش دستورات متنی گروهی
+// ۲. پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
 // ==========================================
-if (!empty($text)) {
+if ($callbackQuery) {
+    $callbackData = $callbackQuery['data'];
+    $callbackId   = $callbackQuery['id'];
+    $messageId    = $callbackQuery['message']['message_id'];
 
-    // دستور آغاز فرآیند اضافه کردن مانهوا به گروه
-    if (strpos($text, '/add_manhwa') === 0) {
-        if (!$isAdminInGroup) {
-            $tg->sendMessage($chatId, "⚠️ این دستور مخصوص ادمین‌ها و مالک ربات است.");
-            exit;
-        }
+    $tg->answerCallbackQuery($callbackId);
 
-        FSM::setStep($botId, $userId, 'waiting_group_manhwa_info');
+    // دکمه لغو و بازگشت به منوی اصلی ربات‌ساز
+    if ($callbackData === 'master_cancel') {
+        FSM::clearStep(0, $userId);
         
-        $tg->sendMessage($chatId, "📥 <b>شروع فرآیند ثبت مانهوا برای این گروه:</b>\n\nلطفاً یک تصویر (به عنوان کاور مانهوا) ارسال کنید و در کپشن (Caption) آن، مشخصات را دقیقاً با الگوی زیر بنویسید:\n\n<code>اسم: نام مانهوا\nخلاصه: خلاصه داستان را اینجا بنویسید\nژانر: ژانرهای مانهوا</code>");
+        $keyboard = [];
+        $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+        $keyboard[] = [
+            ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+            ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
+        ];
+
+        // نمایش دکمه‌های اختصاصی مالک کل سیستم
+        if ($isSystemOwner) {
+            $keyboard[] = [
+                ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
+                ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
+            ];
+        }
+        
+        $tg->sendMessage($userId, "🤖 به منوی اصلی ربات‌ساز خوش آمدید. گزینه مورد نظر خود را انتخاب کنید:", ['inline_keyboard' => $keyboard]);
         exit;
     }
 
-    // دستور انتساب اعضای تیم به مانهوای متصل به این گروه (پشتیبانی از تخصیص چندگانه اعضا)
-    elseif (strpos($text, '/add_team') === 0) {
-        if (!$isAdminInGroup) {
-            $tg->sendMessage($chatId, "⚠️ این دستور مخصوص ادمین‌ها و مالک ربات است.");
-            exit;
-        }
+    // کالبک ساخت ربات جدید
+    elseif ($callbackData === 'master_new_bot') {
+        FSM::setStep(0, $userId, 'waiting_for_token');
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'master_cancel']]
+            ]
+        ];
+        $tg->sendMessage($userId, "📥 <b>لطفاً توکن ربات مانهوای خود را ارسال کنید:</b>\n\nبرای این کار ابتدا به آیدی @BotFather در تلگرام رفته، ربات جدید بسازید و توکنی که به شما می‌دهد را کپی کرده و برای من بفرستید:", $keyboard);
+        exit;
+    }
 
-        // پیدا کردن مانهوای متصل به این گروه
-        $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
-        $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
-        $manhwa = $stmtM->fetch();
+    // کالبک لیست ربات‌های کاربر جاری
+    elseif ($callbackData === 'master_my_bots') {
+        $stmt = $db->prepare("SELECT bot_name, token FROM bots WHERE owner_id = :owner_id ORDER BY id DESC");
+        $stmt->execute(['owner_id' => $userId]);
+        $myBots = $stmt->fetchAll();
 
-        if (!$manhwa) {
-            $tg->sendMessage($chatId, "❌ ابتدا باید این گروه را با دستور <code>/add_manhwa</code> به یک پروژه مانهوا متصل کنید.");
-            exit;
-        }
-
-        // پارس کردن فرمت ارسالی ادمین
-        preg_match('/تایپ\[@?([a-zA-Z0-9_]+)\]/', $text, $matchType);
-        preg_match('/کلین\[@?([a-zA-Z0-9_]+)\]/', $text, $matchClean);
-        preg_match('/ترجمه\[@?([a-zA-Z0-9_]+)\]/', $text, $matchTrans);
-
-        $typeInput  = isset($matchType[1]) ? $matchType[1] : null;
-        $cleanInput = isset($matchClean[1]) ? $matchClean[1] : null;
-        $transInput = isset($matchTrans[1]) ? $matchTrans[1] : null;
-
-        if (!$typeInput || !$cleanInput || !$transInput) {
-            $tg->sendMessage($chatId, "❌ <b>الگوی ارسال دستور اشتباه است!</b>\n\nلطفاً دستور را دقیقاً با فرمت زیر پر کرده و بفرستید:\n\n<code>/add_team\nتایپ[@username]->\nکلین[@username]->\nترجمه[@username]-></code>");
-            exit;
-        }
-
-        // پیدا کردن آیدی‌های عددی اعضای تیم در دیتابیس
-        $typesetterId = findUserByUsernameOrId($db, $botId, $typeInput);
-        $cleanerId    = findUserByUsernameOrId($db, $botId, $cleanInput);
-        $translatorId = findUserByUsernameOrId($db, $botId, $transInput);
-
-        if (!$typesetterId || !$cleanerId || !$translatorId) {
-            $errText = "❌ <b>ثبت تیم با شکست مواجه شد!</b>\n\nبرخی از یوزرنیم‌های ارسال شده هنوز وارد ربات نشده و دکمه استارت را نزده‌اند:\n";
-            $errText .= "├ تایپیست: " . ($typesetterId ? "✅ یافت شد" : "❌ یافت نشد") . "\n";
-            $errText .= "├ کلینر: " . ($cleanerId ? "✅ یافت شد" : "❌ یافت نشد") . "\n";
-            $errText .= "└ مترجم: " . ($translatorId ? "✅ یافت شد" : "❌ یافت نشد");
-            $tg->sendMessage($chatId, $errText);
-            exit;
-        }
-
-        // ثبت اعضای تیم در جدول team_assignments (بدون دستور DELETE پیشین برای حمایت از افزودن چندین عضو همزمان)
-        $db->beginTransaction();
-        try {
-            $stmtIns = $db->prepare("INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) VALUES (:bot_id, :manhwa_id, :role, :user_id)");
+        if (empty($myBots)) {
+            $tg->sendMessage($userId, "⚠️ شما هنوز هیچ رباتی در سیستم نساخته‌اید.");
+        } else {
+            $textBots = "📋 <b>لیست ربات‌های فعال شما:</b>\n\n";
+            $buttons = [];
+            foreach ($myBots as $bot) {
+                $textBots .= "🔹 {$bot['bot_name']}\n";
+                $buttons[] = [['text' => "🚀 ورود به {$bot['bot_name']}", 'url' => "https://t.me/" . str_replace('@', '', $bot['bot_name'])]];
+            }
+            $buttons[] = [['text' => '🔙 بازگشت', 'callback_data' => 'master_cancel']];
             
-            $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'typesetter', 'user_id' => $typesetterId]);
-            $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'cleaner', 'user_id' => $cleanerId]);
-            $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'translator', 'user_id' => $translatorId]);
-
-            $db->commit();
-
-            $tg->sendMessage($chatId, "✅ <b>اعضای جدید با موفقیت به تیم پروژه «{$manhwa['title']}» ملحق شدند!</b>\n\n📝 مترجم: <code>{$transInput}</code>\n🖌 کلینر: <code>{$cleanInput}</code>\n⌨️ تایپیست: <code>{$typeInput}</code>");
-        } catch (Exception $e) {
-            $db->rollBack();
-            $tg->sendMessage($chatId, "❌ خطا در همگام‌سازی دیتابیس تیم مانهوا.");
+            $tg->sendMessage($userId, $textBots, ['inline_keyboard' => $buttons]);
         }
         exit;
     }
 
-    // دستور ارسال فایل چپتر برای تایید و ثبت حقوق اعضا (سازگار با بستر انتساب چندگانه اعضا)
-    elseif (strpos($text, '/add_file_chpter') === 0) {
-        $replyTo = $message['reply_to_message'] ?? null;
-        if (!$replyTo) {
-            $tg->sendMessage($chatId, "❌ این دستور باید حتماً بر روی فایل چپتر نهایی ریپلای شود.");
-            exit;
+    // کالبک راهنمای ساخت ربات
+    elseif ($callbackData === 'master_help') {
+        $helpText = "❓ <b>راهنمای گام‌به‌گام ساخت ربات مدیریت مانهوا:</b>\n\n"
+                  . "💡 پس از ثبت موفق، وارد ربات مانهوای خود شده و <code>/start</code> بزنید تا به عنوان ادمین کل تیم، کنترل پنل شیشه‌ای مانهوا را ببینید.";
+        
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '🔙 بازگشت به منو', 'callback_data' => 'master_cancel']]
+            ]
+        ];
+        $tg->sendMessage($userId, $helpText, $keyboard);
+        exit;
+    }
+
+    // کالبک اختصاصی مالک: لیست کل ربات‌های ثبت شده در سیستم با لینک مستقیم ورود
+    elseif ($callbackData === 'master_owner_all_bots' && $isSystemOwner) {
+        $stmt = $db->prepare("SELECT bot_name, token, owner_id FROM bots WHERE id > 0 ORDER BY id DESC");
+        $stmt->execute();
+        $allBots = $stmt->fetchAll();
+
+        if (empty($allBots)) {
+            $tg->sendMessage($userId, "⚠️ هنوز هیچ رباتی در سیستم ثبت نشده است.");
+        } else {
+            $textBots = "🌐 <b>لیست کل ربات‌های ساخته شده در سرور مانهوا-آی‌آی:</b>\n\n";
+            $buttons = [];
+            foreach ($allBots as $bot) {
+                $cleanName = str_replace('@', '', $bot['bot_name']);
+                $textBots .= "🤖 <b>{$bot['bot_name']}</b>\n└ مالک مانهوا: <code>{$bot['owner_id']}</code>\n\n";
+                $buttons[] = [['text' => "🚀 ورود به {$bot['bot_name']}", 'url' => "https://t.me/{$cleanName}"]];
+            }
+            $buttons[] = [['text' => '🔙 بازگشت به منوی ادمین', 'callback_data' => 'master_cancel']];
+            
+            $tg->sendMessage($userId, $textBots, ['inline_keyboard' => $buttons]);
         }
+        exit;
+    }
 
-        // استخراج فایل ارسالی از ریپلای (پشتیبانی هوشمند از سند و تصویر با بالاترین کیفیت)
-        $repliedFileId = $replyTo['document']['file_id'] ?? end($replyTo['photo'])['file_id'] ?? null;
-        if (!$repliedFileId) {
-            $tg->sendMessage($chatId, "❌ پیغام ریپلای شده حاوی فایل سند (Document) یا تصویر معتبر نیست.");
-            exit;
-        }
-
-        // استخراج شماره چپتر از جلوی دستور
-        preg_match('/\/add_file_chpter\s+(\d+)/', $text, $matchChNum);
-        $chapterNum = isset($matchChNum[1]) ? (int)$matchChNum[1] : null;
-
-        if (!$chapterNum) {
-            $tg->sendMessage($chatId, "❌ شماره چپتر را در مقابل دستور وارد کنید.\n\nمثال: <code>/add_file_chpter 9</code>");
-            exit;
-        }
-
-        // پیدا کردن مانهوای متصل به این گروه
-        $stmtM = $db->prepare("SELECT * FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
-        $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
-        $manhwa = $stmtM->fetch();
-
-        if (!$manhwa) {
-            $tg->sendMessage($chatId, "❌ ابتدا باید این گروه را با دستور <code>/add_manhwa</code> به یک پروژه مانهوا متصل کنید.");
-            exit;
-        }
-
-        // پیدا کردن کادر اعضای ست شده روی این پروژه مانهوا
-        $stmtTeam = $db->prepare("SELECT role, user_id FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :manhwa_id");
-        $stmtTeam->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id']]);
-        $team = $stmtTeam->fetchAll();
-
-        // تجمیع اعضا به تفکیک نقش جهت پشتیبانی کامل از اعضای موازی
-        $assigned = ['translator' => [], 'cleaner' => [], 'typesetter' => []];
-        foreach ($team as $m) {
-            $assigned[$m['role']][] = $m['user_id'];
-        }
-
-        if (empty($assigned['translator']) || empty($assigned['cleaner']) || empty($assigned['typesetter'])) {
-            $tg->sendMessage($chatId, "⚠️ لطفاً ابتدا تیم پروژه را با دستور <code>/add_team</code> ست کنید. بدون ست کردن تیم، مبالغ حقوق چپتر قابل پردازش نیست.");
-            exit;
-        }
-
-        // موتور تشخیص هوشمند توزیع چپتر در حالت همکاری موازی:
-        // اگر فرستنده دستور خودش جزو لیست منتسبین نقشی باشد، اولویت پرداخت به او داده می‌شود. در غیر این صورت، اولین فرد لیست تخصیص پرداخت خواهد شد.
-        $t_id  = $assigned['translator'][0];
-        $c_id  = $assigned['cleaner'][0];
-        $ty_id = $assigned['typesetter'][0];
-
-        if (in_array($userId, $assigned['translator'])) {
-            $t_id = $userId;
-        }
-        if (in_array($userId, $assigned['cleaner'])) {
-            $c_id = $userId;
-        }
-        if (in_array($userId, $assigned['typesetter'])) {
-            $ty_id = $userId;
-        }
-
-        // دریافت نرخ دستمزد اختصاصی مانهوا یا نرخ عمومی ربات در صورت خالی بودن
-        $rateT = $manhwa['rate_translator'] !== null ? $manhwa['rate_translator'] : (float)($db->query("SELECT value FROM settings WHERE bot_id = {$botId} AND key = 'rate_translator'")->fetch()['value'] ?? 0);
-        $rateC = $manhwa['rate_cleaner'] !== null ? $manhwa['rate_cleaner'] : (float)($db->query("SELECT value FROM settings WHERE bot_id = {$botId} AND key = 'rate_cleaner'")->fetch()['value'] ?? 0);
-        $rateTy = $manhwa['rate_typesetter'] !== null ? $manhwa['rate_typesetter'] : (float)($db->query("SELECT value FROM settings WHERE bot_id = {$botId} AND key = 'rate_typesetter'")->fetch()['value'] ?? 0);
-
-        // ثبت چپتر جدید به حالت pending (انتظار برای تایید ادمین) در دیتابیس نئون
-        $stmtCh = $db->prepare("
-            INSERT INTO chapters (bot_id, manhwa_id, chapter_num, file_id, status, translator_id, cleaner_id, typesetter_id, translator_pay, cleaner_pay, typesetter_pay)
-            VALUES (:bot_id, :manhwa_id, :chapter_num, :file_id, 'pending', :t_id, :c_id, :ty_id, :t_pay, :c_pay, :ty_pay)
-            RETURNING id
+    // کالبک اختصاصی مالک: مانیتورینگ زنده و نمایش ۲۲ شاخص آماری کل سرور به صورت تفکیک‌شده (بدون خطا)
+    elseif ($callbackData === 'master_owner_stats' && $isSystemOwner) {
+        
+        // کوئری ۱: تحلیل کاربران کل ربات‌ها با روش تجمیع شرطی
+        $stmtUserStats = $db->prepare("
+            SELECT 
+                COUNT(DISTINCT tg_id) as total_users,
+                COUNT(DISTINCT CASE WHEN role = 'owner' THEN tg_id END) as total_owners,
+                COUNT(DISTINCT CASE WHEN role = 'admin' THEN tg_id END) as total_admins,
+                COUNT(DISTINCT CASE WHEN role = 'translator' AND status = 'approved' THEN tg_id END) as total_translators,
+                COUNT(DISTINCT CASE WHEN role = 'cleaner' AND status = 'approved' THEN tg_id END) as total_cleaners,
+                COUNT(DISTINCT CASE WHEN role = 'typesetter' AND status = 'approved' THEN tg_id END) as total_typesetters,
+                COUNT(CASE WHEN status = 'pending_test' THEN 1 END) as pending_recruits,
+                COALESCE(SUM(total_earned), 0) as total_earned_sum
+            FROM users 
+            WHERE bot_id > 0;
         ");
-        $stmtCh->execute([
-            'bot_id'      => $botId,
-            'manhwa_id'   => $manhwa['id'],
-            'chapter_num' => $chapterNum,
-            'file_id'     => $repliedFileId,
-            't_id'        => $t_id,
-            'c_id'        => $c_id,
-            'ty_id'       => $ty_id,
-            't_pay'       => $rateT,
-            'c_pay'       => $rateC,
-            'ty_pay'      => $rateTy
-        ]);
-        $newChapterId = $stmtCh->fetch()['id'];
+        $stmtUserStats->execute();
+        $uStats = $stmtUserStats->fetch();
 
-        $tg->sendMessage($chatId, "📥 چپتر <code>{$chapterNum}</code> مانهوای <b>«{$manhwa['title']}»</b> با موفقیت دریافت شد و جهت تایید نهایی و واریز حقوق برای ادمین کل فرستاده شد.");
+        // کوئری ۲: تحلیل مانهواهای ثبت شده
+        $stmtManhwaStats = $db->prepare("
+            SELECT 
+                COUNT(*) as total_manhwas,
+                COUNT(CASE WHEN group_id IS NOT NULL THEN 1 END) as connected_manhwas
+            FROM manhwas;
+        ");
+        $stmtManhwaStats->execute();
+        $mStats = $stmtManhwaStats->fetch();
 
-        // ارسال فایل چپتر برای تمامی ادمین‌ها و مالک ربات جهت تایید دکمه‌ای (بدون خطای منطقی SQL با عملگر OR)
-        $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner')");
-        $stmtAdmins->execute(['bot_id' => $botId]);
-        $admins = $stmtAdmins->fetchAll();
+        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم (با استفاده از مقادیر ایمن و Coalesce)
+        $stmtChapterStats = $db->prepare("
+            SELECT 
+                COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_chapters,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_chapters,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN translator_pay ELSE 0 END), 0) as pay_translators,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN cleaner_pay ELSE 0 END), 0) as pay_cleaners,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN typesetter_pay ELSE 0 END), 0) as pay_typesetters
+            FROM chapters;
+        ");
+        $stmtChapterStats->execute();
+        $cStats = $stmtChapterStats->fetch();
 
-        $adminCaption = "📥 <b>چپتر جدید جهت بررسی و پرداخت دستمزد:</b>\n\n"
-                      . "📚 مانهوا: <b>{$manhwa['title']}</b>\n"
-                      . "🔢 شماره چپتر: <b>{$chapterNum}</b>\n"
-                      . "👤 ارسال کننده: {$fullName} (@{$username})\n\n"
-                      . "💰 مبالغ محاسبه شده چپتر:\n"
-                      . "├ مترجم: " . number_format($rateT) . " تومان\n"
-                      . "├ کلینر: " . number_format($rateC) . " تومان\n"
-                      . "└ تایپیست: " . number_format($rateTy) . " تومان\n\n"
-                      . "💡 تایید چپتر باعث واریز خودکار مبالغ بالا به کیف پول اعضا و آپدیت چپتر مانهوا می‌شود.";
+        // کوئری ۴: تحلیل آماری آزمون‌های استخدامی داوطلبان
+        $stmtTestStats = $db->prepare("
+            SELECT 
+                COUNT(*) as total_tests,
+                COUNT(CASE WHEN status = 'accepted' THEN 1 END) as accepted_tests,
+                COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_tests
+            FROM submitted_tests;
+        ");
+        $stmtTestStats->execute();
+        $tStats = $stmtTestStats->fetch();
+
+        // کوئری ۵: تحلیل تیکت‌ها و آزمون‌های تمرینی عمومی
+        $stmtMiscStats = $db->prepare("
+            SELECT 
+                (SELECT COUNT(*) FROM tickets) as total_tickets,
+                (SELECT COUNT(*) FROM tickets WHERE status = 'open') as open_tickets,
+                (SELECT COUNT(*) FROM practice_exams) as total_exams,
+                (SELECT COUNT(*) FROM bots WHERE id > 0) as total_bots;
+        ");
+        $stmtMiscStats->execute();
+        $miscStats = $stmtMiscStats->fetch();
+
+        // محاسبه آمارهای ترکیبی
+        $totalPaidSum = (float)$cStats['pay_translators'] + (float)$cStats['pay_cleaners'] + (float)$cStats['pay_typesetters'];
+
+        // نگارش گزارش کامل آماری ۲۲ شاخص متمایز سیستم
+        $statsText = "📊 <b>گزارش آماری ۲۲ شاخص متمایز کل سرور (مخصوص مالک کل):</b>\n\n"
+                   . "🤖 <b>بخش ربات‌ها:</b>\n"
+                   . "└ ۱. کل ربات‌های فعال ثبت شده: <code>{$miscStats['total_bots']}</code> ربات\n\n"
+                   . "👥 <b>بخش کاربران و پرسنل تیمی:</b>\n"
+                   . "├ ۲. کل کاربران ثبت شده در ربات‌ها: <code>{$uStats['total_users']}</code> نفر\n"
+                   . "├ ۳. تعداد مالکین ربات‌های مانهوا: <code>{$uStats['total_owners']}</code> نفر\n"
+                   . "├ ۴. تعداد کل ادمین‌های منتسب شده: <code>{$uStats['total_admins']}</code> نفر\n"
+                   . "├ ۵. مترجمین فعال تایید شده: <code>{$uStats['total_translators']}</code> نفر\n"
+                   . "├ ۶. کلینرهای فعال تایید شده: <code>{$uStats['total_cleaners']}</code> نفر\n"
+                   . "├ ۷. تایپیست‌های فعال تایید شده: <code>{$uStats['total_typesetters']}</code> نفر\n"
+                   . "└ ۸. کاندیداهای در انتظار بررسی استخدام: <code>{$uStats['pending_recruits']}</code> نفر\n\n"
+                   . "📚 <b>بخش مانهواها و پروژه‌ها:</b>\n"
+                   . "├ ۹. کل پروژه‌های مانهوای ثبت شده: <code>{$mStats['total_manhwas']}</code> عدد\n"
+                   . "└ ۱۰. مانهواهای فعال متصل به گروه کار: <code>{$mStats['connected_manhwas']}</code> عدد\n\n"
+                   . "🔢 <b>بخش چپترها و ارسال کارها:</b>\n"
+                   . "├ ۱۱. کل چپترهای تایید و ثبت شده: <code>{$cStats['approved_chapters']}</code> چپتر\n"
+                   . "└ ۱۲. چپترهای در انتظار تایید مدیریت: <code>{$cStats['pending_chapters']}</code> چپتر\n\n"
+                   . "💸 <b>بخش محاسبات مالی و حقوق‌ها:</b>\n"
+                   . "├ ۱۳. کل حقوق توزیع شده پرسنل: <code>" . number_format($totalPaidSum) . "</code> تومان\n"
+                   . "├ ۱۴. مجموع کیف پول فعلی اعضا: <code>" . number_format($uStats['total_earned_sum']) . "</code> تومان\n"
+                   . "├ ۱۵. سهم پرداختی به مترجمین: <code>" . number_format($cStats['pay_translators']) . "</code> تومان\n"
+                   . "├ ۱۶. سهم پرداختی به کلینرها: <code>" . number_format($cStats['pay_cleaners']) . "</code> تومان\n"
+                   . "└ ۱۷. سهم پرداختی به تایپیست‌ها: <code>" . number_format($cStats['pay_typesetters']) . "</code> تومان\n\n"
+                   . "📂 <b>بخش سنجش، آزمون‌ها و تیکت‌ها:</b>\n"
+                   . "├ ۱۸. مجموع تست‌های استخدامی ثبت شده: <code>{$tStats['total_tests']}</code> تست\n"
+                   . "├ ۱۹. تست‌های استخدامی پذیرفته‌شده: <code>{$tStats['accepted_tests']}</code> مورد\n"
+                   . "├ ۲۰. تست‌های استخدامی رد شده: <code>{$tStats['rejected_tests']}</code> مورد\n"
+                   . "├ ۲۱. کل تیکت‌های پشتیبانی باز شده: <code>{$miscStats['total_tickets']}</code> تیکت\n"
+                   . "├ ۲۲. تیکت‌های باز در انتظار پاسخ: <code>{$miscStats['open_tickets']}</code> تیکت\n"
+                   . "└ ۲۳. کل آزمون‌های تمرینی ثبت شده: <code>{$miscStats['total_exams']}</code> آزمون\n\n"
+                   . "🕒 <i>این گزارش بر اساس آخرین تراکنش‌های دیتابیس نئون به صورت زنده تولید شده است.</i>";
 
         $keyboard = [
             'inline_keyboard' => [
-                [
-                    ['text' => '✅ تایید و پرداخت حقوق', 'callback_data' => "admin_approve_ch_{$newChapterId}"],
-                    ['text' => '❌ رد چپتر', 'callback_data' => "admin_ch_rej_init_{$newChapterId}"]
-                ]
+                [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'master_cancel']]
             ]
         ];
+        $tg->sendMessage($userId, $statsText, $keyboard);
+        exit;
+    }
+}
 
-        foreach ($admins as $ad) {
-            $tg->sendDocument($ad['tg_id'], $repliedFileId, $adminCaption, $keyboard);
+// ==========================================
+// ۳. پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
+// ==========================================
+if (!empty($text)) {
+    // دستور استارت ربات‌ساز اصلی
+    if ($text === '/start') {
+        FSM::clearStep(0, $userId);
+
+        $keyboard = [];
+        $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+        $keyboard[] = [
+            ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+            ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
+        ];
+
+        $welcome = "سلام <b>{$fullName}</b> گرامی!\n"
+                 . "به ربات‌ساز بزرگ <b>تیم مانهوا</b> خوش آمدید.\n\n"
+                 . "با این سیستم می‌توانید ربات پیشرفته اختصاصی خود را جهت مدیریت مانهوا، ترجمه، تایپ، کلینرها، محاسبه حقوق و سازماندهی کارهای تیم خود بسازید.\n\n"
+                 . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
+
+        // نمایش گزینه‌های مانیتورینگ پیشرفته برای مالک کل سیستم
+        if ($isSystemOwner) {
+            $keyboard[] = [
+                ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
+                ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
+            ];
+            $welcome .= "\n\n🛡️ <b>شما به عنوان مالک اصلی سیستم شناسایی شدید. پنل مانیتورینگ زنده کل سرور برای شما فعال است.</b>";
         }
+
+        $tg->sendMessage($userId, $welcome, ['inline_keyboard' => $keyboard]);
         exit;
     }
 
-    // دستور ۱: تنظیم مبالغ اختصاصی دستمزد مانهوا به صورت مستقیم از داخل گروه کاری
-    elseif (strpos($text, '/set_rates') === 0) {
-        if (!$isAdminInGroup) {
-            $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
+    // اگر کاربر در حال ارسال توکن ربات مانهوا باشد
+    if ($step === 'waiting_for_token') {
+        $tokenInput = trim($text);
+
+        if (!preg_match('/^[0-9]+:[a-zA-Z0-9_-]+$/', $tokenInput)) {
+            $tg->sendMessage($userId, "❌ فرمت توکن ارسال شده نامعتبر است. لطفاً توکن معتبر ارسال کنید یا دکمه لغو را فشار دهید.");
             exit;
         }
 
-        preg_match('/\/set_rates\s+(\d+)\s+(\d+)\s+(\d+)/', $text, $matchRates);
-        if (!$matchRates) {
-            $tg->sendMessage($chatId, "❌ <b>فرمت دستور اشتباه است!</b>\n\nقالب استفاده:\n<code>/set_rates [مترجم] [کلینر] [تایپیست]</code>\n\nمثال: <code>/set_rates 12000 8000 9000</code>");
-            exit;
+        // --- رفع باگ ۱: بررسی عدم امکان ثبت مجدد و تصاحب غیرمجاز ربات دیگران (Bot Hijacking) ---
+        $stmtCheck = $db->prepare("SELECT owner_id FROM bots WHERE token = :token LIMIT 1");
+        $stmtCheck->execute(['token' => $tokenInput]);
+        $existingBot = $stmtCheck->fetch();
+
+        if ($existingBot) {
+            if ((int)$existingBot['owner_id'] !== $userId) {
+                $tg->sendMessage($userId, "❌ <b>خطای امنیتی!</b>\n\nاین ربات قبلاً توسط کاربر دیگری ثبت شده است و شما مالکیت آن را بر عهده ندارید.");
+                exit;
+            }
         }
+        // --------------------------------------------------------------------------------------
 
-        $stmtM = $db->prepare("UPDATE manhwas SET rate_translator = :t, rate_cleaner = :c, rate_typesetter = :ty WHERE bot_id = :bot_id AND group_id = :g_id");
-        $stmtM->execute([
-            't' => (float)$matchRates[1],
-            'c' => (float)$matchRates[2],
-            'ty' => (float)$matchRates[3],
-            'bot_id' => $botId,
-            'g_id' => $chatId
-        ]);
+        $tempTg = new Telegram($tokenInput);
+        $meResult = $tempTg->getMe();
 
-        $tg->sendMessage($chatId, "✅ <b>نرخ‌های اختصاصی مانهوای این گروه با موفقیت تنظیم شد:</b>\n\n📝 مترجم: " . number_format($matchRates[1]) . " ت\n🖌 کلینر: " . number_format($matchRates[2]) . " ت\n⌨️ تایپیست: " . number_format($matchRates[3]) . " ت");
-        exit;
-    }
+        if ($meResult && isset($meResult['ok']) && $meResult['ok'] === true) {
+            $botUsername = $meResult['result']['username'];
+            $botName     = $meResult['result']['first_name'];
 
-    // دستور ۲: ثبت قوانین و استانداردهای گروه کاری
-    elseif (strpos($text, '/set_rules') === 0) {
-        if (!$isAdminInGroup) {
-            $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
-            exit;
-        }
-        $rulesText = trim(str_replace('/set_rules', '', $text));
-
-        if (empty($rulesText)) {
-            $tg->sendMessage($chatId, "❌ لطفا متن قوانین را مقابل دستور بنویسید.");
-            exit;
-        }
-
-        $stmt = $db->prepare("INSERT INTO group_rules (bot_id, group_id, rules) VALUES (:bot_id, :g_id, :rules) ON CONFLICT (bot_id, group_id) DO UPDATE SET rules = EXCLUDED.rules");
-        $stmt->execute(['bot_id' => $botId, 'g_id' => $chatId, 'rules' => $rulesText]);
-
-        $tg->sendMessage($chatId, "✅ <b>قوانین و استانداردهای کار تیمی این گروه با موفقیت ثبت شد.</b>");
-        exit;
-    }
-
-    // دستور ۳: دریافت و نمایش قوانین کاری گروه برای اعضا
-    elseif ($text === '/rules') {
-        $stmt = $db->prepare("SELECT rules FROM group_rules WHERE bot_id = :bot_id AND group_id = :g_id LIMIT 1");
-        $stmt->execute(['bot_id' => $botId, 'g_id' => $chatId]);
-        $row = $stmt->fetch();
-
-        if ($row) {
-            $tg->sendMessage($chatId, "📖 <b>قوانین و استانداردهای کار تیمی این گروه:</b>\n\n{$row['rules']}");
-        } else {
-            $tg->sendMessage($chatId, "⚠️ هیچ قانون اختصاصی برای این گروه کاری ثبت نشده است.");
-        }
-        exit;
-    }
-
-    // دستور ۴: دریافت آخرین وضعیت پروژه مانهوا و تیم متصل به آن
-    elseif ($text === '/status') {
-        $stmt = $db->prepare("SELECT * FROM manhwas WHERE bot_id = :bot_id AND group_id = :g_id LIMIT 1");
-        $stmt->execute(['bot_id' => $botId, 'g_id' => $chatId]);
-        $m = $stmt->fetch();
-
-        if ($m) {
-            $stmtTeam = $db->prepare("
-                SELECT ta.role, u.full_name 
-                FROM team_assignments ta 
-                JOIN users u ON ta.user_id = u.tg_id 
-                WHERE ta.bot_id = :bot_id AND ta.manhwa_id = :m_id
-            ");
-            $stmtTeam->execute(['bot_id' => $botId, 'm_id' => $m['id']]);
-            $team = $stmtTeam->fetchAll();
-
-            $staff = ['translator' => [], 'cleaner' => [], 'typesetter' => []];
-            foreach ($team as $member) {
-                $staff[$member['role']][] = $member['full_name'];
+            // تشخیص پویای دامنه رندر جهت ست کردن وب‌هوک
+            $host = $_SERVER['HTTP_HOST'] ?? '';
+            if (empty($host)) {
+                $tg->sendMessage($userId, "❌ خطای سیستمی در تشخیص دامنه رندر رخ داده است.");
+                exit;
             }
 
-            $resp = "📚 <b>وضعیت پروژه: «{$m['title']}»</b>\n"
-                  . "🔢 آخرین چپتر ثبت شده: <code>{$m['last_chapter']}</code>\n"
-                  . "🎭 ژانرها: {$m['genres']}\n\n"
-                  . "👥 <b>اعضای تیم فعال مانهوا:</b>\n"
-                  . "├ مترجمین: " . (empty($staff['translator']) ? "❌ بدون انتساب" : implode('، ', $staff['translator'])) . "\n"
-                  . "├ کلینرها: " . (empty($staff['cleaner']) ? "❌ بدون انتساب" : implode('، ', $staff['cleaner'])) . "\n"
-                  . "└ تایپیست‌ها: " . (empty($staff['typesetter']) ? "❌ بدون انتساب" : implode('، ', $staff['typesetter'])) . "\n\n"
-                  . "💡 برای ثبت چپتر، تایپیست باید دستور <code>/add_file_chpter [شماره]</code> را روی کار ریپلای کند.";
-            $tg->sendMessage($chatId, $resp);
+            $webhookUrl = "https://{$host}/index.php?bot_token=" . urlencode($tokenInput);
+            $webhookResult = $tempTg->setWebhook($webhookUrl);
+
+            if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
+                // ثبت یا به روز رسانی ربات در دیتابیس (با توجه به بررسی بالا، این عملیات کاملا امن است)
+                $stmt = $db->prepare("
+                    INSERT INTO bots (token, owner_id, bot_name) 
+                    VALUES (:token, :owner_id, :bot_name)
+                    ON CONFLICT (token) DO UPDATE 
+                    SET owner_id = EXCLUDED.owner_id, bot_name = EXCLUDED.bot_name
+                    RETURNING id
+                ");
+                $stmt->execute([
+                    'token'    => $tokenInput,
+                    'owner_id' => $userId,
+                    'bot_name' => '@' . $botUsername
+                ]);
+                $botRow = $stmt->fetch();
+                $newBotId = (int)$botRow['id'];
+
+                // مقداردهی اولیه تنظیمات برای ربات جدید
+                $stmtSettings = $db->prepare("
+                    INSERT INTO settings (bot_id, key, value) VALUES 
+                    (:bot_id, 'rate_translator', '10000'),
+                    (:bot_id, 'rate_cleaner', '8000'),
+                    (:bot_id, 'rate_typesetter', '8000'),
+                    (:bot_id, 'rules', 'تست‌ها باید با کیفیت و بدون واترمارک باشند.')
+                    ON CONFLICT (bot_id, key) DO NOTHING
+                ");
+                $stmtSettings->execute(['bot_id' => $newBotId]);
+
+                // ثبت سازنده به عنوان مالک (owner) در ربات جدید
+                $stmtOwner = $db->prepare("
+                    INSERT INTO users (bot_id, tg_id, username, full_name, role, status)
+                    VALUES (:bot_id, :tg_id, :username, :full_name, 'owner', 'approved')
+                    ON CONFLICT (bot_id, tg_id) DO UPDATE 
+                    SET role = 'owner', status = 'approved'
+                ");
+                $stmtOwner->execute([
+                    'bot_id'    => $newBotId,
+                    'tg_id'     => $userId,
+                    'username'  => $username,
+                    'full_name' => $fullName
+                ]);
+
+                FSM::clearStep(0, $userId);
+
+                $keyboard = [
+                    'inline_keyboard' => [
+                        [['text' => '🚀 ورود به ربات مانهوا', 'url' => "https://t.me/{$botUsername}"]],
+                        [['text' => '🔙 بازگشت به منوی ربات‌ساز', 'callback_data' => 'master_cancel']]
+                    ]
+                ];
+
+                $tg->sendMessage($userId, "🎉 <b>تبریک می‌گویم! ربات اختصاصی شما ساخته شد.</b>\n\n🤖 آیدی ربات: @{$botUsername}\n⚙️ نام نمایشی: {$botName}\n\n👇 وارد ربات خود شوید و دکمه <code>/start</code> را بفرستید تا کنترل پنل کامل ادمین تیم مانهوا برایتان باز شود.", $keyboard);
+            } else {
+                $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد.");
+            }
+        } else {
+            $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد.");
         }
-        exit;
-    }
-
-    // دستور ۵: دریافت آمار فعالیت تیمی و چپترهای ثبت شده گروه
-    elseif ($text === '/stats') {
-        $stmt = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :g_id LIMIT 1");
-        $stmt->execute(['bot_id' => $botId, 'g_id' => $chatId]);
-        $m = $stmt->fetch();
-
-        if ($m) {
-            $stmtCh = $db->prepare("SELECT COUNT(*) as total_ch FROM chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id AND status = 'approved'");
-            $stmtCh->execute(['bot_id' => $botId, 'm_id' => $m['id']]);
-            $totalCh = $stmtCh->fetch()['total_ch'];
-
-            $statsText = "📊 <b>آمار کارکرد و پیشرفت پروژه «{$m['title']}»:</b>\n\n"
-                       . "📈 مجموع چپترهای تایید نهایی شده در این گروه: <code>{$totalCh}</code> چپتر\n"
-                       . "🕒 وضعیت نظارت بر کارکرد: فعال و زنده";
-            $tg->sendMessage($chatId, $statsText);
-        }
-        exit;
-    }
-
-    // دستور ۶: عزل کل اعضای انتساب یافته به یک نقش خاص از داخل گروه
-    elseif (strpos($text, '/unassign') === 0) {
-        if (!$isAdminInGroup) {
-            $tg->sendMessage($chatId, "⚠️ مخصوص ادمین‌ها.");
-            exit;
-        }
-        preg_match('/\/unassign\s+(translator|cleaner|typesetter)/', $text, $matchRole);
-        
-        if (!$matchRole) {
-            $tg->sendMessage($chatId, "❌ <b>دستور نامعتبر است.</b>\n\nقالب استفاده:\n<code>/unassign [role]</code>\n\nمثال: <code>/unassign translator</code>");
-            exit;
-        }
-
-        $roleToUnassign = $matchRole[1];
-        $stmtM = $db->prepare("SELECT id FROM manhwas WHERE bot_id = :bot_id AND group_id = :g_id LIMIT 1");
-        $stmtM->execute(['bot_id' => $botId, 'g_id' => $chatId]);
-        $m = $stmtM->fetch();
-
-        if ($m) {
-            $stmtDel = $db->prepare("DELETE FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND role = :role");
-            $stmtDel->execute(['bot_id' => $botId, 'm_id' => $m['id'], 'role' => $roleToUnassign]);
-
-            $tg->sendMessage($chatId, "✅ تمامی افراد متصل به نقش <b>" . getRoleFarsiAdmin($roleToUnassign) . "</b> با موفقیت از این پروژه عزل شدند.");
-        }
-        exit;
-    }
-
-    // دستور راهنمای ربات در گروه
-    elseif ($text === '/help' || $text === 'راهنما') {
-        $helpText = "📖 <b>راهنمای دستورات گروه مانهوا مانپین:</b>\n\n"
-                  . "📌 <b>دستورات مخصوص ادمین‌ها:</b>\n"
-                  . "├ <code>/add_manhwa</code> ➔ متصل کردن گروه کاری به پروژه جدید مانهوا\n"
-                  . "├ <code>/add_team</code> ➔ افزودن اعضا به لیست انجام‌دهندگان پروژه\n"
-                  . "├ <code>/set_rates [مترجم] [کلینر] [تایپیست]</code> ➔ تنظیم حقوق مانهوای این گروه\n"
-                  . "├ <code>/set_rules [متن]</code> ➔ ثبت استانداردهای تیمی گروه کاری\n"
-                  . "└ <code>/unassign [translator|cleaner|typesetter]</code> ➔ عزل کامل اعضا از نقش مشخص‌شده\n\n"
-                  . "📌 <b>دستورات عمومی اعضا:</b>\n"
-                  . "├ <code>/add_file_chpter [شماره]</code> ➔ ثبت چپتر نهایی ریپلای‌شده جهت بررسی و واریز حقوق\n"
-                  . "├ <code>/rules</code> ➔ نمایش قوانین تیمی و استانداردهای کار\n"
-                  . "├ <code>/status</code> ➔ وضعیت آخرین چپتر و اعضای تیم متصل\n"
-                  . "└ <code>/stats</code> ➔ مجموع چپترهای انجام‌شده این پروژه";
-        
-        $tg->sendMessage($chatId, $helpText);
         exit;
     }
 }
