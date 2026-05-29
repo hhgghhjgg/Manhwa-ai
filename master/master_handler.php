@@ -22,16 +22,18 @@ $callbackQuery = $update['callback_query'] ?? null;
 
 $userId    = $message['from']['id'] ?? $callbackQuery['from']['id'] ?? null;
 $username  = $message['from']['username'] ?? $callbackQuery['from']['username'] ?? null;
-$fullName  = ($message['from']['first_name'] ?? $callbackQuery['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? $callbackQuery['from']['last_name'] ?? '');
+$fullName  = trim(($message['from']['first_name'] ?? $callbackQuery['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? $callbackQuery['from']['last_name'] ?? ''));
 $text      = $message['text'] ?? '';
 
-if (!$userId) exit;
+if (!$userId) {
+    exit;
+}
 
 // ۱. ثبت یا به‌روزرسانی مشخصات کاربر در زمینه ربات مادر (bot_id = 0)
 $user = FSM::initUser(0, $userId, $username, $fullName);
 $step = $user['step'] ?? 'idle';
 
-// بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل هلدینگ است یا خیر
+// بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل سیستم است یا خیر
 $isSystemOwner = ($userId === OWNER_ID);
 
 // ==========================================
@@ -291,6 +293,19 @@ if (!empty($text)) {
             exit;
         }
 
+        // --- رفع باگ ۱: بررسی عدم امکان ثبت مجدد و تصاحب غیرمجاز ربات دیگران (Bot Hijacking) ---
+        $stmtCheck = $db->prepare("SELECT owner_id FROM bots WHERE token = :token LIMIT 1");
+        $stmtCheck->execute(['token' => $tokenInput]);
+        $existingBot = $stmtCheck->fetch();
+
+        if ($existingBot) {
+            if ((int)$existingBot['owner_id'] !== $userId) {
+                $tg->sendMessage($userId, "❌ <b>خطای امنیتی!</b>\n\nاین ربات قبلاً توسط کاربر دیگری ثبت شده است و شما مالکیت آن را بر عهده ندارید.");
+                exit;
+            }
+        }
+        // --------------------------------------------------------------------------------------
+
         $tempTg = new Telegram($tokenInput);
         $meResult = $tempTg->getMe();
 
@@ -309,7 +324,7 @@ if (!empty($text)) {
             $webhookResult = $tempTg->setWebhook($webhookUrl);
 
             if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
-                // ثبت ربات در دیتابیس نئون
+                // ثبت یا به روز رسانی ربات در دیتابیس (با توجه به بررسی بالا، این عملیات کاملا امن است)
                 $stmt = $db->prepare("
                     INSERT INTO bots (token, owner_id, bot_name) 
                     VALUES (:token, :owner_id, :bot_name)
