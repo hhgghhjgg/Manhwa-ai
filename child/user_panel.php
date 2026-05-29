@@ -21,6 +21,8 @@ $botId     = $botContext['bot_id'];
 // استخراج مشخصات پیام کاربر
 $message       = $botContext['update']['message'] ?? null;
 $callbackQuery = $botContext['update']['callback_query'] ?? null;
+// رفع باگ ۳: تعریف زودهنگام شناسه کالبک‌کوئری جهت استفاده بدون خطا در سناریوی لغو عمومی
+$callbackId    = $callbackQuery['id'] ?? null;
 $text          = $message['text'] ?? '';
 
 // ==========================================
@@ -66,7 +68,7 @@ if ($text === '/cancel' || $text === 'لغو' || (isset($callbackQuery) && $call
     
     FSM::clearStep($botId, $userId);
     
-    if (isset($callbackQuery)) {
+    if (isset($callbackQuery) && $callbackId !== null) {
         $tg->answerCallbackQuery($callbackId, "عملیات لغو شد.");
     }
 
@@ -148,13 +150,16 @@ if (strpos($step, 'waiting_test_') === 0) {
         exit;
     }
 
-    // اطلاع‌رسانی خودکار به مالکین و ادمین‌های این ربات (اصلاح تداخل SQL و به کار بردن OR به جای ||)
-    $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner')");
+    // اطلاع‌رسانی خودکار به مالکین و ادمین‌های این ربات
+    $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
 
     $roleFarsiName = getRoleFarsi($testRole);
-    $adminNotifyText = "📥 <b>یک پاسخ تست حل شده جدید ثبت شد!</b>\n\n👤 کاربر: {$fullName} (@{$username})\n⚔️ نقش داوطلبی: {$roleFarsiName}\n\n👉 جهت مشاهده و بررسی فایل تست به پنل خود بخش [مدیریت عضوگیری -> آخرین تست‌ها] مراجعه کنید.";
+    $adminNotifyText = "📥 <b>یک پاسخ تست حل شده جدید ثبت شد!</b>\n\n"
+                     . "👤 کاربر: {$fullName} (@{$username})\n"
+                     . "⚔️ نقش داوطلبی: {$roleFarsiName}\n\n"
+                     . "👉 جهت مشاهده و بررسی فایل تست به پنل خود بخش [مدیریت عضوگیری -> آخرین تست‌ها] مراجعه کنید.";
 
     foreach ($adminsList as $admin) {
         $tg->sendMessage($admin['tg_id'], $adminNotifyText);
@@ -200,12 +205,12 @@ elseif (strpos($step, 'user_typing_ticket_') === 0) {
         exit;
     }
 
-    // اطلاع‌رسانی به ادمین هدف یا کلیه ادمین‌ها (اصلاح تداخل SQL و استفاده از OR)
+    // اطلاع‌رسانی به ادمین هدف یا کلیه ادمین‌ها
     $notifyAdmins = [];
     if ($assignedAdminId) {
         $notifyAdmins[] = $assignedAdminId;
     } else {
-        $stmtAll = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner')");
+        $stmtAll = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
         $stmtAll->execute(['bot_id' => $botId]);
         $allAdmins = $stmtAll->fetchAll();
         foreach ($allAdmins as $ad) {
@@ -259,8 +264,8 @@ elseif (strpos($step, 'user_waiting_exam_solve_') === 0) {
     FSM::clearStep($botId, $userId);
     $tg->sendMessage($userId, "✅ <b>پاسخ آزمون حل شده تمرینی شما با موفقیت برای ادمین‌های ارشد ارسال شد. خسته نباشید!</b>");
 
-    // هدایت خودکار فایل آزمون حل شده به ادمین‌های ربات جهت بررسی و منتورینگ (اصلاح تداخل SQL)
-    $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner')");
+    // هدایت خودکار فایل آزمون حل شده به ادمین‌های ربات جهت بررسی و منتورینگ
+    $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
 
@@ -317,8 +322,6 @@ if ($message && $text === '/start') {
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
-    $callbackId   = $callbackQuery['id'];
-    $messageId    = $callbackQuery['message']['message_id'];
 
     botLog($botId, $userId, 'info', 'User clicked inline button.', ['callback_data' => $callbackData]);
 
@@ -571,7 +574,11 @@ if ($callbackQuery) {
         $ticketId = (int)str_replace('usr_t_view_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT * FROM tickets WHERE bot_id = :bot_id AND id = :id AND user_id = :u_id LIMIT 1");
-        $stmt->execute(['bot_id' => $botId, 'id' => $ticketId, 'u_id' => $userId]);
+        $stmt->execute([
+            'bot_id' => $botId,
+            'id'     => $ticketId,
+            'u_id'   => $userId
+        ]);
         $t = $stmt->fetch();
 
         if ($t) {
