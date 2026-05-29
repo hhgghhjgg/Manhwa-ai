@@ -50,9 +50,9 @@ class Telegram {
         }
         
         $response = json_decode($result, true);
-        if ($httpCode !== 200 || !isset($response['ok']) || !$response['ok']) {
+        if ($httpCode !== 200 || !is_array($response) || !isset($response['ok']) || !$response['ok']) {
             error_log("Telegram API Error in method '{$method}': " . $result);
-            return $response;
+            return is_array($response) ? $response : false;
         }
         
         return $response;
@@ -155,7 +155,12 @@ class Telegram {
             'expire_date'  => time() + $expireSeconds // زمان انقضای پیش‌فرض ۲۴ ساعت آینده
         ];
         $response = $this->apiRequest('createChatInviteLink', $data);
-        return $response['result']['invite_link'] ?? null;
+        
+        if (is_array($response) && isset($response['result']['invite_link'])) {
+            return $response['result']['invite_link'];
+        }
+        
+        return null;
     }
 
     /**
