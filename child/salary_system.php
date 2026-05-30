@@ -5,7 +5,7 @@
  * Role: Financial calculations, Payout Processor, Lazy Monthly Reset & Activity Monitor
  */
 
-// اطمینان از صحت کانتکست لود شده در index.php و child/router.php
+// اطمینان از صحت کانتکست لود شده
 if (!isset($botContext) || !isset($tg) || !isset($db)) {
     exit;
 }
@@ -68,7 +68,7 @@ if (!function_exists('checkInactiveManhwas')) {
      * پایش مانهواهای ثبت شده و ارسال هشدار خودکار به گروه‌ها در صورت راکد ماندن پروژه
      */
     function checkInactiveManhwas($db, $tg, $botId) {
-        // واکشی مانهواهایی که از آخرین فعالیت کاربری آن‌ها بیش از روزهای مجاز گذشته است (اصلاح تداخل SQL)
+        // واکشی مانهواهایی که از آخرین فعالیت کاربری آن‌ها بیش از روزهای مجاز گذشته است
         $stmtInactive = $db->prepare("
             SELECT m.id, m.title, m.group_id, m.last_active_at,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - m.last_active_at)) as inactive_days
@@ -87,7 +87,7 @@ if (!function_exists('checkInactiveManhwas')) {
             return;
         }
 
-        // واکشی لیست تمامی ادمین‌ها و مالک این ربات جهت تگ کردن در پیام هشدار (اصلاح تداخل SQL)
+        // واکشی لیست تمامی ادمین‌ها و مالک این ربات جهت تگ کردن در پیام هشدار
         $stmtAdmins = $db->prepare("
             SELECT tg_id, full_name 
             FROM users 
@@ -119,9 +119,27 @@ if (!function_exists('checkInactiveManhwas')) {
     }
 }
 
-// اجرای مکانیزم ریست ماهانه و پایش تنبل مانهواها با بالا آمدن هسته مالی
-lazyMonthlyReset($db, $botId);
-checkInactiveManhwas($db, $tg, $botId);
+// ==========================================
+// بهینه‌سازی سرعت: کنترل دفعات اجرای پایش مانهواهای راکد و ریست ماهانه (محدود به هر ۱۲ ساعت یک‌بار)
+// ==========================================
+$now = time();
+$stmtCheckTime = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'last_inactivity_check' LIMIT 1");
+$stmtCheckTime->execute(['bot_id' => $botId]);
+$timeRow = $stmtCheckTime->fetch();
+
+if (!$timeRow || ($now - (int)$timeRow['value']) > 43200) {
+    // اجرای مکانیزم ریست ماهانه و پایش مانهواهای راکد
+    lazyMonthlyReset($db, $botId);
+    checkInactiveManhwas($db, $tg, $botId);
+
+    // به‌روزرسانی زمان آخرین بررسی در پایگاه‌داده
+    $stmtUpdateCheckTime = $db->prepare("
+        INSERT INTO settings (bot_id, key, value) 
+        VALUES (:bot_id, 'last_inactivity_check', :value)
+        ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value
+    ");
+    $stmtUpdateCheckTime->execute(['bot_id' => $botId, 'value' => (string)$now]);
+}
 
 // ==========================================
 // ۳. توابع تایید یا رد چپترهای ارسالی و پرداخت حقوق
@@ -266,7 +284,7 @@ if ($callbackQuery) {
     $messageId    = $callbackQuery['message']['message_id'];
     $adminChatId  = $callbackQuery['message']['chat']['id'];
 
-    // الف) پردازش دکمه تایید چپتر و پرداخت حقوق
+    // الف) تایید چپتر و پرداخت حقوق
     if (strpos($callbackData, 'admin_approve_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $chapterId = (int)str_replace('admin_approve_ch_', '', $callbackData);
@@ -281,7 +299,7 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ب) پردازش دکمه رد چپتر
+    // ب) رد چپتر
     elseif (strpos($callbackData, 'admin_reject_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $chapterId = (int)str_replace('admin_reject_ch_', '', $callbackData);
