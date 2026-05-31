@@ -2,11 +2,11 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/group_panel.php
- * Role: Group Command Processor with Dual Mode (Slash Commands + Farsi Interactive Inline Flows)
+ * Role: Group Command Processor with Dual Mode & Collision-Free Team Assignments (ON CONFLICT Resolution)
  */
 
 // اطمینان از صحت متغیرها و کانتکست لود شده
-if (!isset($botContext) || !isset($tg) || !isset($user) || !isset($db)) {
+if (!isset($botContext, $tg, $user, $db)) {
     exit;
 }
 
@@ -94,7 +94,7 @@ if ($userStep === 'waiting_group_manhwa_info' && $isAdminInGroup) {
     }
 }
 
-// ب) فرآیند جستجو و ثبت شیشه‌ای اعضای تیم
+// ب) فرآیند جستجو و ثبت شیشه‌ای اعضای تیم با پشتیبانی از سرچ دقیق
 elseif (strpos($userStep, 'group_waiting_search_') === 0 && $isAdminInGroup) {
     $roleToAssign = str_replace('group_waiting_search_', '', $userStep);
     FSM::clearStep($botId, $userId);
@@ -185,7 +185,7 @@ elseif ($userStep === 'group_waiting_rule_title' && $isAdminInGroup) {
     exit;
 }
 
-// ه) فرآیند دریافت توضیحات و ثبت نهایی قانون
+// ه) فرآیند دریافت توضیحات و ثبت نهایی قانون تیمی
 elseif (strpos($userStep, 'group_waiting_rule_desc_') === 0 && $isAdminInGroup) {
     $encodedTitle = str_replace('group_waiting_rule_desc_', '', $userStep);
     $ruleTitle    = base64_decode($encodedTitle);
@@ -221,7 +221,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // فرآیند انتساب شیشه‌ای - فعال‌سازی FSM جهت سرچ
+    // فرآیند انتساب شیشه‌ای - فعال‌سازی FSM جهت سرچ کاربر
     elseif (strpos($callbackData, 'grp_assign_init_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         if (!$isAdminInGroup) exit;
@@ -236,7 +236,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // فرآیند انتساب شیشه‌ای - درخواست تایید نهایی
+    // فرآیند انتساب شیشه‌ای - درخواست تایید نهایی عضو
     elseif (strpos($callbackData, 'grp_assign_confirm_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         if (!$isAdminInGroup) exit;
@@ -264,7 +264,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // فرآیند انتساب شیشه‌ای - ذخیره‌سازی قطعی در دیتابیس
+    // فرآیند انتساب شیشه‌ای - ذخیره‌سازی با ساختار پیشرفته ضد کرش (ON CONFLICT)
     elseif (strpos($callbackData, 'grp_assign_do_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         if (!$isAdminInGroup) exit;
@@ -278,7 +278,13 @@ if ($callbackQuery && $callbackData) {
         $manhwa = $stmtM->fetch();
 
         if ($manhwa) {
-            $stmtInsert = $db->prepare("INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) VALUES (:bot_id, :manhwa_id, :role, :user_id)");
+            // حل نهایی باگ همپوشانی نقش (به روز رسانی خودکار عضو در صورت وجود تخصیص قبلی بدون بروز ارور ۵۰۰)
+            $stmtInsert = $db->prepare("
+                INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
+                VALUES (:bot_id, :manhwa_id, :role, :user_id)
+                ON CONFLICT (bot_id, manhwa_id, role) 
+                DO UPDATE SET user_id = EXCLUDED.user_id
+            ");
             $stmtInsert->execute([
                 'bot_id'    => $botId,
                 'manhwa_id' => $manhwa['id'],
@@ -303,7 +309,7 @@ if ($callbackQuery && $callbackData) {
         $roleToUpdate = str_replace('grp_rate_init_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "group_waiting_rate_{$roleToUpdate}");
-        $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینر' : 'تایپیست');
+        $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینer' : 'تایپیست');
 
         $tg->sendMessage($chatId, "💸 لطفاً مبلغ دستمزد اختصاصی جدید نقش <b>«{$roleFarsi}»</b> را به عدد (به تومان) وارد کنید:", [
             'reply_to_message_id' => $messageId
@@ -311,7 +317,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // فرآیند ثبت قانون شیشه‌ای - فعال‌سازی FSM دریافت عنوان
+    // فرآیند ثبت قانون شیشه‌ای - فعال‌سازی FSM دریافت عنوان قانون
     elseif ($callbackData === 'grp_rule_add_title') {
         $tg->answerCallbackQuery($callbackId);
         if (!$isAdminInGroup) exit;
@@ -323,7 +329,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // نمایش لیست شیشه‌ای قوانین برای ادمین جهت مدیریت
+    // نمایش لیست شیشه‌ای قوانین برای ادمین جهت مدیریت و حذف
     elseif (strpos($callbackData, 'grp_rules_list_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         if (!$isAdminInGroup) exit;
@@ -389,7 +395,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // حذف قانون توسط ادمین
+    // حذف قانون تیمی توسط ادمین گروه
     elseif (strpos($callbackData, 'grp_rules_del_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         if (!$isAdminInGroup) exit;
@@ -407,7 +413,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // مشاهده لیست قوانین توسط کاربران عادی
+    // مشاهده لیست قوانین توسط کاربران و اعضای عادی گروه
     elseif (strpos($callbackData, 'grp_user_rules_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $page = (int)str_replace('grp_user_rules_', '', $callbackData);
@@ -453,7 +459,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // مشاهده جزییات قانون برای کاربر عادی
+    // مشاهده جزییات قانون برای کاربر عادی گروه
     elseif (strpos($callbackData, 'grp_user_rule_view_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $ruleId = (int)str_replace('grp_user_rule_view_', '', $callbackData);
@@ -486,7 +492,7 @@ if (!empty($text)) {
             exit;
         }
 
-        // مدل اول: دستور اسلشی سنتی (بدون هیچ پنل شیشه‌ای)
+        // مدل اول: دستور اسلشی سنتی (جایگزینی هوشمند با ON CONFLICT جهت جلوگیری از کرش دیتابیس)
         if (strpos($text, '/add_team') === 0) {
             $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
             $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
@@ -525,7 +531,13 @@ if (!empty($text)) {
 
             $db->beginTransaction();
             try {
-                $stmtIns = $db->prepare("INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) VALUES (:bot_id, :manhwa_id, :role, :user_id)");
+                // پی‌ریزی مجدد دستورات درج با قید یکتا جهت جلوگیری از بروز باگ کلید تکراری
+                $stmtIns = $db->prepare("
+                    INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
+                    VALUES (:bot_id, :manhwa_id, :role, :user_id)
+                    ON CONFLICT (bot_id, manhwa_id, role) 
+                    DO UPDATE SET user_id = EXCLUDED.user_id
+                ");
                 $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'typesetter', 'user_id' => $typesetterId]);
                 $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'cleaner', 'user_id' => $cleanerId]);
                 $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'translator', 'user_id' => $translatorId]);
@@ -558,7 +570,7 @@ if (!empty($text)) {
         }
     }
 
-    // ۲. دستور تنظیم مبالغ اختصاصی دستمزد
+    // ۲. دستور تنظیم مبالغ اختصاصی دستمزد آثار مانهوا
     elseif ($text === 'تنظیم قیمت' || strpos($text, '/set_rates') === 0) {
         if (!$isAdminInGroup) {
             $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
@@ -586,7 +598,7 @@ if (!empty($text)) {
             exit;
         }
 
-        // مدل دوم: پیام فارسی نوین (پنل شیشه‌ای مجزا برای هر نرخ)
+        // مدل دوم: پیام فارسی نوین (پنل شیشه‌ای مجزا برای هر نرخ دستمزد)
         else {
             $keyboard = [
                 'inline_keyboard' => [
@@ -605,7 +617,7 @@ if (!empty($text)) {
         }
     }
 
-    // ۳. دستور مدیریت قوانین گروه (مخصوص مدیریت)
+    // ۳. دستور مدیریت قوانین گروه کاری (مخصوص مدیریت)
     elseif ($text === 'مدیریت قانون' || strpos($text, '/set_rules') === 0) {
         if (!$isAdminInGroup) {
             $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
@@ -627,7 +639,7 @@ if (!empty($text)) {
             exit;
         }
 
-        // مدل دوم: منوی تعاملی قوانین
+        // مدل دوم: منوی تعاملی قوانین به صورت شیشه‌ای عنوان‌دار
         else {
             $keyboard = [
                 'inline_keyboard' => [
@@ -643,7 +655,7 @@ if (!empty($text)) {
         }
     }
 
-    // ۴. دستور مشاهده قوانین (عمومی اعضا)
+    // ۴. دستور مشاهده قوانین کاری (عمومی اعضا)
     elseif ($text === 'قوانین' || $text === 'قوانین گروه' || $text === '/rules') {
         // باز کردن هوشمند آرشیو قوانین به صورت شیشه‌ای با ورق‌زن
         $keyboard = [
@@ -690,7 +702,7 @@ if (!empty($text)) {
         exit;
     }
 
-    // ۶. دستور آمار کارکرد گروه
+    // ۶. دستور آمار کارکرد گروه کاری
     elseif ($text === 'آمار' || $text === '/stats') {
         $stmt = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :g_id LIMIT 1");
         $stmt->execute(['bot_id' => $botId, 'g_id' => $chatId]);
