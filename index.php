@@ -70,8 +70,8 @@ try {
             exit;
         }
         
-        // استعلام اطلاعات مالکیتی و شناسه داخلی ربات فرزند از جدول ربات‌ها
-        $stmt = $db->prepare("SELECT id, owner_id, bot_name FROM bots WHERE token = :token LIMIT 1");
+        // استعلام اطلاعات مالکیتی، شناسه داخلی و وضعیت سندباکس ربات فرزند از جدول ربات‌ها
+        $stmt = $db->prepare("SELECT id, owner_id, bot_name, is_sandbox FROM bots WHERE token = :token LIMIT 1");
         $stmt->execute(['token' => $botToken]);
         $botData = $stmt->fetch();
         
@@ -83,19 +83,24 @@ try {
         
         // ایجاد بسته زمینه (Context) برای ربات فرزندِ مانهوا
         $botContext = [
-            'is_master' => false,
-            'bot_id'    => (int)$botData['id'],
-            'bot_token' => $botToken,
-            'owner_id'  => (int)$botData['owner_id'],
-            'bot_name'  => $botData['bot_name'] ?? 'ربات مانهوا',
-            'update'    => $update
+            'is_master'  => false,
+            'bot_id'     => (int)$botData['id'],
+            'bot_token'  => $botToken,
+            'owner_id'   => (int)$botData['owner_id'],
+            'bot_name'   => $botData['bot_name'] ?? 'ربات مانهوا',
+            'is_sandbox' => (bool)($botData['is_sandbox'] ?? false), // دریافت وضعیت سندباکس
+            'update'     => $update
         ];
         
-        // هدایت درخواست به پردازشگر مرکزی مانهوا
-        require_once __DIR__ . '/child/router.php';
+        // هدایت درخواست به پردازشگر مرکزی مانهوا (عادی یا سندباکس)
+        if ($botContext['is_sandbox']) {
+            require_once __DIR__ . '/child_sandbox/router.php';
+        } else {
+            require_once __DIR__ . '/child/router.php';
+        }
     }
     
-    // اتمام عملیات با موفقیت کامل جهت جلوگیری از ارسال مجدد پیام تکراری توسط سرور تلگرام
+    // اتمام عملیات با موفقیت جهت جلوگیری از ارسال مجدد پیام تکراری توسط سرور تلگرام
     http_response_code(200);
     
 } catch (Exception $e) {
