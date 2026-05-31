@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/user_panel.php
- * Role: Full Member & Guest Dashboard Processor (Recruitment, Support Tickets, Practice Exams, Cancel System)
+ * Role: Full Member & Guest Dashboard Processor with Granular 22-Way Notifications Integration
  */
 
 // ۱. اطمینان از صحت کانتکست و متغیرهای تعریف شده در index.php و child/router.php
@@ -21,7 +21,6 @@ $botId     = $botContext['bot_id'];
 // استخراج مشخصات پیام کاربر
 $message       = $botContext['update']['message'] ?? null;
 $callbackQuery = $botContext['update']['callback_query'] ?? null;
-// رفع باگ ۳: تعریف زودهنگام شناسه کالبک‌کوئری جهت استفاده بدون خطا در سناریوی لغو عمومی
 $callbackId    = $callbackQuery['id'] ?? null;
 $text          = $message['text'] ?? '';
 
@@ -150,8 +149,26 @@ if (strpos($step, 'waiting_test_') === 0) {
         exit;
     }
 
-    // اطلاع‌رسانی خودکار به مالکین و ادمین‌های این ربات
-    $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
+    // بازنشانی فرآیند نوتیفیکیشن با متد دسترسی‌های ۲۲گانه جدید:
+    // فقط ادمین‌هایی که فیلد دسترسی استخدام مربوط به آن حوزه (مترجم/کلینر/تایپیست) را دارند مطلع می‌شوند.
+    $permField = 'perm_rec_translator';
+    if ($testRole === 'cleaner') {
+        $permField = 'perm_rec_cleaner';
+    } elseif ($testRole === 'typesetter') {
+        $permField = 'perm_rec_typesetter';
+    }
+
+    $stmtAdmins = $db->prepare("
+        SELECT u.tg_id 
+        FROM users u
+        LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
+        WHERE u.bot_id = :bot_id 
+          AND u.status = 'approved'
+          AND (
+              u.role = 'owner' 
+              OR (u.role = 'admin' AND ap.{$permField} = TRUE)
+          )
+    ");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
 
@@ -205,12 +222,22 @@ elseif (strpos($step, 'user_typing_ticket_') === 0) {
         exit;
     }
 
-    // اطلاع‌رسانی به ادمین هدف یا کلیه ادمین‌ها
+    // اطلاع‌رسانی به ادمین هدف یا ادمین‌های واجد شرایط تیکتینگ ۲۲گانه جدید (perm_tickets_view)
     $notifyAdmins = [];
     if ($assignedAdminId) {
         $notifyAdmins[] = $assignedAdminId;
     } else {
-        $stmtAll = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
+        $stmtAll = $db->prepare("
+            SELECT u.tg_id 
+            FROM users u
+            LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
+            WHERE u.bot_id = :bot_id 
+              AND u.status = 'approved'
+              AND (
+                  u.role = 'owner' 
+                  OR (u.role = 'admin' AND ap.perm_tickets_view = TRUE)
+              )
+        ");
         $stmtAll->execute(['bot_id' => $botId]);
         $allAdmins = $stmtAll->fetchAll();
         foreach ($allAdmins as $ad) {
@@ -264,8 +291,18 @@ elseif (strpos($step, 'user_waiting_exam_solve_') === 0) {
     FSM::clearStep($botId, $userId);
     $tg->sendMessage($userId, "✅ <b>پاسخ آزمون حل شده تمرینی شما با موفقیت برای ادمین‌های ارشد ارسال شد. خسته نباشید!</b>");
 
-    // هدایت خودکار فایل آزمون حل شده به ادمین‌های ربات جهت بررسی و منتورینگ
-    $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
+    // هدایت خودکار پاسخ به ادمین‌های مجاز (دارای دسترسی perm_exams_manage)
+    $stmtAdmins = $db->prepare("
+        SELECT u.tg_id 
+        FROM users u
+        LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
+        WHERE u.bot_id = :bot_id 
+          AND u.status = 'approved'
+          AND (
+              u.role = 'owner' 
+              OR (u.role = 'admin' AND ap.perm_exams_manage = TRUE)
+          )
+    ");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
 
@@ -601,7 +638,19 @@ if ($callbackQuery) {
     // ۱۰. منوی دکمه شیشه‌ای شروع ارسال تیکت پشتیبانی
     elseif ($callbackData === 'user_open_ticket') {
         $tg->answerCallbackQuery($callbackId);
-        $stmtAdmins = $db->prepare("SELECT tg_id, full_name FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'");
+        
+        // واکشی ادمین‌های مجاز تیکتینگ ۲۲گانه جدید (perm_tickets_view) جهت واگذاری تیکت
+        $stmtAdmins = $db->prepare("
+            SELECT u.tg_id, u.full_name 
+            FROM users u
+            LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
+            WHERE u.bot_id = :bot_id 
+              AND u.status = 'approved'
+              AND (
+                  u.role = 'owner' 
+                  OR (u.role = 'admin' AND ap.perm_tickets_view = TRUE)
+              )
+        ");
         $stmtAdmins->execute(['bot_id' => $botId]);
         $admins = $stmtAdmins->fetchAll();
 
