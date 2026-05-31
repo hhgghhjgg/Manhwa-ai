@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/admin_panel.php
- * Role: Full Advanced Admin Panel Processor with Pagination, Search, Manual Member Import, Ticket System & Multi-staff Tools
+ * Role: Full Advanced Admin Panel Processor with Granular 22-Way Permissions, 3-Column Member Interface, and Accurate Backtracking
  */
 
 // ۱. لود خودکار موتور تسویه حساب، پایش مانهوا و سیستم ریست ماهانه
@@ -23,7 +23,7 @@ $message       = $botContext['update']['message'] ?? null;
 $callbackQuery = $botContext['update']['callback_query'] ?? null;
 
 // ==========================================
-// فاز ۱: توابع کمکی و اعتبارسنجی سطوح دسترسی
+// فاز ۱: توابع کمکی و اعتبارسنجی سطوح دسترسی ۲۲گانه
 // ==========================================
 
 if (!function_exists('getRoleFarsiAdmin')) {
@@ -42,9 +42,10 @@ if (!function_exists('getRoleFarsiAdmin')) {
 
 if (!function_exists('hasPermission')) {
     /**
-     * بررسی هوشمند دسترسی ادمین بر اساس سطوح ۱۰گانه در دیتابیس نئون
+     * بررسی هوشمند دسترسی ادمین بر اساس سطوح ۲۲گانه در دیتابیس نئون
      */
     function hasPermission($db, $botId, $userId, $permName) {
+        // مالکین ربات‌ها به تمام سطوح دسترسی دارند
         $stmtUser = $db->prepare("SELECT role FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
         $stmtUser->execute(['bot_id' => $botId, 'tg_id' => $userId]);
         $userRow = $stmtUser->fetch();
@@ -53,7 +54,17 @@ if (!function_exists('hasPermission')) {
         }
 
         $dbField = "perm_" . $permName;
-        $whitelist = ['recruit', 'manhwa', 'team', 'salary', 'settings', 'broadcast', 'add_admin', 'tickets', 'exams', 'warning'];
+        $whitelist = [
+            'rec_translator', 'rec_cleaner', 'rec_typesetter', 'rec_rules',
+            'proj_add', 'proj_edit', 'proj_delete',
+            'team_assign', 'team_dismiss',
+            'sal_chapter_approve', 'sal_chapter_reject', 'sal_rates_global', 'sal_rates_specific',
+            'broadcast_groups', 'broadcast_users',
+            'admin_add', 'admin_perms',
+            'tickets_view', 'tickets_reply',
+            'exams_manage',
+            'warn_user', 'user_ban'
+        ];
         
         if (!in_array($permName, $whitelist)) {
             return false;
@@ -66,11 +77,45 @@ if (!function_exists('hasPermission')) {
     }
 }
 
-if (!function_exists('showAdminPermissionsPanel')) {
+if (!function_exists('showAdminPermissionsMainPanel')) {
     /**
-     * ترسیم پنل شیشه‌ای تنظیم سطوح دسترسی ۱۰گانه برای یک ادمین
+     * نمایش منوی مادر تنظیم سطوح دسترسی ۲۲گانه در ۵ بخش تفکیکی
      */
-    function showAdminPermissionsPanel($db, $tg, $botId, $targetAdminId, $chatId, $messageId = null) {
+    function showAdminPermissionsMainPanel($db, $tg, $botId, $targetAdminId, $chatId, $messageId = null) {
+        $stmtU = $db->prepare("SELECT full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+        $stmtU->execute(['bot_id' => $botId, 'tg_id' => $targetAdminId]);
+        $uRow = $stmtU->fetch();
+        $adminName = $uRow ? $uRow['full_name'] : 'ادمین مانهوا';
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '👥 ۱. دسترسی‌های استخدام', 'callback_data' => "admin_perms_sub_{$targetAdminId}_1"]],
+                [['text' => '📚 ۲. دسترسی‌های پروژه‌ها', 'callback_data' => "admin_perms_sub_{$targetAdminId}_2"]],
+                [['text' => '👥 ۳. دسترسی‌های مدیریت تیم', 'callback_data' => "admin_perms_sub_{$targetAdminId}_3"]],
+                [['text' => '💸 ۴. دسترسی‌های مالی و مبالغ', 'callback_data' => "admin_perms_sub_{$targetAdminId}_4"]],
+                [['text' => '⚙️ ۵. دسترسی‌های ابزارها و امنیت', 'callback_data' => "admin_perms_sub_{$targetAdminId}_5"]],
+                [['text' => '🔙 بازگشت به مشخصات ادمین', 'callback_data' => "admin_user_v_{$targetAdminId}"]]
+            ]
+        ];
+
+        $text = "🛡️ <b>بخش تنظیمات سطوح دسترسی ۲۲گانه ادمین:</b>\n\n"
+              . "👤 نام ادمین: <b>{$adminName}</b>\n"
+              . "🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\n"
+              . "دسترسی‌ها جهت جلوگیری از شلوغی پنل در ۵ دسته مجزا قرار گرفته‌اند. شاخه مورد نظر را انتخاب کنید:";
+
+        if ($messageId) {
+            $tg->editMessageText($chatId, $messageId, $text, $keyboard);
+        } else {
+            $tg->sendMessage($chatId, $text, $keyboard);
+        }
+    }
+}
+
+if (!function_exists('showAdminPermissionsSubPanel')) {
+    /**
+     * نمایش جزییات و کلیدهای روشن/خاموش هرکدام از دسته‌های ۲۲گانه
+     */
+    function showAdminPermissionsSubPanel($db, $tg, $botId, $targetAdminId, $catId, $chatId, $messageId = null) {
         $stmt = $db->prepare("SELECT * FROM admin_permissions WHERE bot_id = :bot_id AND user_id = :user_id LIMIT 1");
         $stmt->execute(['bot_id' => $botId, 'user_id' => $targetAdminId]);
         $perms = $stmt->fetch();
@@ -81,38 +126,75 @@ if (!function_exists('showAdminPermissionsPanel')) {
             $perms = $stmtIns->fetch();
         }
 
-        $stmtU = $db->prepare("SELECT full_name FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
-        $stmtU->execute(['bot_id' => $botId, 'tg_id' => $targetAdminId]);
-        $uRow = $stmtU->fetch();
-        $adminName = $uRow ? $uRow['full_name'] : 'ادمین مانهوا';
+        $buttons = [];
+        $title = "";
 
-        $keyboard = [
-            'inline_keyboard' => [
-                [
-                    ['text' => ($perms['perm_recruit'] ? '✅' : '❌') . ' ۱. استخدام/عضوگیری', 'callback_data' => "toggle_perm_{$targetAdminId}_recruit"],
-                    ['text' => ($perms['perm_manhwa'] ? '✅' : '❌') . ' ۲. ثبت مانهوا', 'callback_data' => "toggle_perm_{$targetAdminId}_manhwa"]
-                ],
-                [
-                    ['text' => ($perms['perm_team'] ? '✅' : '❌') . ' ۳. انتساب پروژه', 'callback_data' => "toggle_perm_{$targetAdminId}_team"],
-                    ['text' => ($perms['perm_salary'] ? '✅' : '❌') . ' ۴. تایید حقوق/چپتر', 'callback_data' => "toggle_perm_{$targetAdminId}_salary"]
-                ],
-                [
-                    ['text' => ($perms['perm_settings'] ? '✅' : '❌') . ' ۵. نرخ‌های دستمزد', 'callback_data' => "toggle_perm_{$targetAdminId}_settings"],
-                    ['text' => ($perms['perm_broadcast'] ? '✅' : '❌') . ' ۶. ارسال همگانی', 'callback_data' => "toggle_perm_{$targetAdminId}_broadcast"]
-                ],
-                [
-                    ['text' => ($perms['perm_add_admin'] ? '✅' : '❌') . ' ۷. مدیریت ادمین‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_add_admin"],
-                    ['text' => ($perms['perm_tickets'] ? '✅' : '❌') . ' ۸. مدیریت تیکت‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_tickets"]
-                ],
-                [
-                    ['text' => ($perms['perm_exams'] ? '✅' : '❌') . ' ۹. مدیریت آزمون‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_exams"],
-                    ['text' => ($perms['perm_warning'] ? '✅' : '❌') . ' ۱۰. تنظیمات آلارم', 'callback_data' => "toggle_perm_{$targetAdminId}_warning"]
-                ],
-                [['text' => '🔙 ثبت نهایی و بازگشت', 'callback_data' => 'admin_settings']]
-            ]
-        ];
+        if ($catId == 1) {
+            $title = "👥 <b>دسته اول: مدیریت استخدام و عضوگیری</b>";
+            $buttons[] = [
+                ['text' => ($perms['perm_rec_translator'] ? '✅' : '❌') . ' استخدام مترجم', 'callback_data' => "toggle_perm_{$targetAdminId}_rec_translator"],
+                ['text' => ($perms['perm_rec_cleaner'] ? '✅' : '❌') . ' استخدام کلینر', 'callback_data' => "toggle_perm_{$targetAdminId}_rec_cleaner"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_rec_typesetter'] ? '✅' : '❌') . ' استخدام تایپیست', 'callback_data' => "toggle_perm_{$targetAdminId}_rec_typesetter"],
+                ['text' => ($perms['perm_rec_rules'] ? '✅' : '❌') . ' شرایط استخدام', 'callback_data' => "toggle_perm_{$targetAdminId}_rec_rules"]
+            ];
+        } elseif ($catId == 2) {
+            $title = "📚 <b>دسته دوم: مدیریت مانهواها و آثار</b>";
+            $buttons[] = [
+                ['text' => ($perms['perm_proj_add'] ? '✅' : '❌') . ' ثبت مانهوای جدید', 'callback_data' => "toggle_perm_{$targetAdminId}_proj_add"],
+                ['text' => ($perms['perm_proj_edit'] ? '✅' : '❌') . ' ویرایش مانهوا', 'callback_data' => "toggle_perm_{$targetAdminId}_proj_edit"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_proj_delete'] ? '✅' : '❌') . ' حذف مانهوا', 'callback_data' => "toggle_perm_{$targetAdminId}_proj_delete"]
+            ];
+        } elseif ($catId == 3) {
+            $title = "👥 <b>دسته سوم: مدیریت ساختار تیم</b>";
+            $buttons[] = [
+                ['text' => ($perms['perm_team_assign'] ? '✅' : '❌') . ' انتساب پرسنل', 'callback_data' => "toggle_perm_{$targetAdminId}_team_assign"],
+                ['text' => ($perms['perm_team_dismiss'] ? '✅' : '❌') . ' عزل پرسنل', 'callback_data' => "toggle_perm_{$targetAdminId}_team_dismiss"]
+            ];
+        } elseif ($catId == 4) {
+            $title = "💸 <b>دسته چهارم: محاسبات و تراکنش‌های مالی</b>";
+            $buttons[] = [
+                ['text' => ($perms['perm_sal_chapter_approve'] ? '✅' : '❌') . ' تایید چپتر و پرداخت', 'callback_data' => "toggle_perm_{$targetAdminId}_sal_chapter_approve"],
+                ['text' => ($perms['perm_sal_chapter_reject'] ? '✅' : '❌') . ' رد چپتر مانهوا', 'callback_data' => "toggle_perm_{$targetAdminId}_sal_chapter_reject"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_sal_rates_global'] ? '✅' : '❌') . ' نرخ عمومی دستمزد', 'callback_data' => "toggle_perm_{$targetAdminId}_sal_rates_global"],
+                ['text' => ($perms['perm_sal_rates_specific'] ? '✅' : '❌') . ' نرخ اختصاصی مانهوا', 'callback_data' => "toggle_perm_{$targetAdminId}_sal_rates_specific"]
+            ];
+        } elseif ($catId == 5) {
+            $title = "⚙️ <b>دسته پنجم: ابزارها، تیکتینگ و امنیت کل</b>";
+            $buttons[] = [
+                ['text' => ($perms['perm_broadcast_groups'] ? '✅' : '❌') . ' پیام همگانی به گروه‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_broadcast_groups"],
+                ['text' => ($perms['perm_broadcast_users'] ? '✅' : '❌') . ' پیام همگانی پی‌وی', 'callback_data' => "toggle_perm_{$targetAdminId}_broadcast_users"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_admin_add'] ? '✅' : '❌') . ' انتساب ادمین جدید', 'callback_data' => "toggle_perm_{$targetAdminId}_admin_add"],
+                ['text' => ($perms['perm_admin_perms'] ? '✅' : '❌') . ' تنظیم دسترسی‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_admin_perms"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_tickets_view'] ? '✅' : '❌') . ' مشاهده تیکت‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_tickets_view"],
+                ['text' => ($perms['perm_tickets_reply'] ? '✅' : '❌') . ' پاسخ به تیکت‌ها', 'callback_data' => "toggle_perm_{$targetAdminId}_tickets_reply"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_exams_manage'] ? '✅' : '❌') . ' آزمون‌های تمرینی', 'callback_data' => "toggle_perm_{$targetAdminId}_exams_manage"],
+                ['text' => ($perms['perm_warn_user'] ? '✅' : '❌') . ' اخطار انضباطی', 'callback_data' => "toggle_perm_{$targetAdminId}_warn_user"]
+            ];
+            $buttons[] = [
+                ['text' => ($perms['perm_user_ban'] ? '✅' : '❌') . ' مسدودسازی کامل', 'callback_data' => "toggle_perm_{$targetAdminId}_user_ban"]
+            ];
+        }
 
-        $text = "🛡️ <b>مدیریت سطوح دسترسی ۱۰گانه ادمین:</b>\n\n👤 نام ادمین: <b>{$adminName}</b>\n🆔 شناسه تلگرام: <code>{$targetAdminId}</code>\n\nبرای فعال یا غیرفعال کردن هر دسترسی، روی گزینه مربوطه کلیک کنید:";
+        $buttons[] = [['text' => '🔙 بازگشت به شاخه‌های دسترسی', 'callback_data' => "admin_perms_main_{$targetAdminId}"]];
+
+        $text = "🛡️ <b>مدیریت جزییات دسترسی ادمین:</b>\n\n"
+              . "👤 نام ادمین: <b>" . htmlspecialchars($perms['user_id'] == $targetAdminId ? $targetAdminId : 'ادمین') . "</b>\n"
+              . "{$title}\n\n"
+              . "جهت تغییر وضعیت هر دسترسی، روی دکمه مربوطه کلیک کنید:";
+
+        $keyboard = ['inline_keyboard' => $buttons];
 
         if ($messageId) {
             $tg->editMessageText($chatId, $messageId, $text, $keyboard);
@@ -150,7 +232,7 @@ if ($message) {
     if (!empty($text)) {
         if ($step === 'admin_waiting_project_search') {
             FSM::clearStep($botId, $userId);
-            if (!hasPermission($db, $botId, $userId, 'manhwa')) exit;
+            if (!hasPermission($db, $botId, $userId, 'proj_edit')) exit;
             $stmt = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND title ILIKE :q ORDER BY id DESC LIMIT 10");
             $stmt->execute(['bot_id' => $botId, 'q' => "%{$text}%"]);
             $results = $stmt->fetchAll();
@@ -172,7 +254,7 @@ if ($message) {
 
         elseif ($step === 'admin_waiting_user_search') {
             FSM::clearStep($botId, $userId);
-            if (!hasPermission($db, $botId, $userId, 'team')) exit;
+            if (!hasPermission($db, $botId, $userId, 'team_assign')) exit;
             $stmt = $db->prepare("SELECT tg_id, full_name, role FROM users WHERE bot_id = :bot_id AND (full_name ILIKE :q OR username ILIKE :q) AND role != 'none' LIMIT 10");
             $stmt->execute(['bot_id' => $botId, 'q' => "%{$text}%"]);
             $results = $stmt->fetchAll();
@@ -194,7 +276,7 @@ if ($message) {
 
         elseif ($step === 'admin_waiting_manual_search') {
             FSM::clearStep($botId, $userId);
-            if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+            if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
             $input = trim($text);
             $targetUser = null;
 
@@ -237,7 +319,7 @@ if ($message) {
 
         elseif ($step === 'admin_waiting_manual_table_input') {
             FSM::clearStep($botId, $userId);
-            if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+            if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
             $lines = explode("\n", $text);
             $successCount = 0;
             $failedEntries = [];
@@ -308,13 +390,13 @@ if ($message) {
             }
 
             $tg->sendMessage($userId, $reportText, [
-                'inline_keyboard' => [[['text' => '🔙 بازگشت به منوی عضوگیری', 'callback_data' => 'admin_recruit']]]
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به منوی ثبت دستی', 'callback_data' => 'admin_manual_recruit_menu']]]
             ]);
             exit;
         }
 
         elseif ($step === 'admin_waiting_rules') {
-            if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+            if (!hasPermission($db, $botId, $userId, 'rec_rules')) exit;
             $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'rules', :rules) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
             $stmt->execute(['bot_id' => $botId, 'rules' => $text]);
 
@@ -326,7 +408,7 @@ if ($message) {
         }
 
         elseif ($step === 'admin_waiting_warning_days') {
-            if (!hasPermission($db, $botId, $userId, 'warning')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
             if (!is_numeric($text) || (int)$text <= 0) {
                 $tg->sendMessage($userId, "❌ لطفاً فقط عدد صحیح بزرگتر از صفر وارد کنید:");
                 exit;
@@ -343,7 +425,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_rate_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
             $roleToUpdate = str_replace('admin_waiting_rate_', '', $step);
             
             if (!is_numeric($text) || (int)$text < 0) {
@@ -366,7 +448,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_ticket_reply_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'tickets')) exit;
+            if (!hasPermission($db, $botId, $userId, 'tickets_reply')) exit;
             $ticketId = (int)str_replace('admin_waiting_ticket_reply_', '', $step);
 
             $stmtT = $db->prepare("SELECT user_id FROM tickets WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -389,7 +471,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_send_msg_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'recruit') && !hasPermission($db, $botId, $userId, 'team')) exit;
+            if (!hasPermission($db, $botId, $userId, 'warn_user')) exit;
             $targetUserId = str_replace('admin_send_msg_', '', $step);
 
             $sent = $tg->sendMessage($targetUserId, "✉️ <b>پیام مدیریت تیم مانهوا برای شما:</b>\n\n" . $text);
@@ -404,7 +486,7 @@ if ($message) {
         }
 
         elseif ($step === 'admin_waiting_team_group_id') {
-            if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
             if (!is_numeric($text)) {
                 $tg->sendMessage($userId, "❌ آیدی عددی گروه تلگرام باید عدد منفی بزرگ باشد:");
                 exit;
@@ -421,7 +503,7 @@ if ($message) {
         }
 
         elseif ($step === 'admin_waiting_add_admin_id') {
-            if (!hasPermission($db, $botId, $userId, 'add_admin')) exit;
+            if (!hasPermission($db, $botId, $userId, 'admin_perms')) exit;
             if (!is_numeric($text)) {
                 $tg->sendMessage($userId, "❌ آیدی عددی تلگرام فقط باید عدد باشد:");
                 exit;
@@ -442,12 +524,12 @@ if ($message) {
 
             $tg->sendMessage($text, "🎉 <b>شما توسط مدیریت مانهوا به مقام ادمین ارتقا یافتید.</b>\n\nدستور <code>/start</code> را ارسال کنید تا پنل دسترسی‌ها فعال شود.");
             
-            showAdminPermissionsPanel($db, $tg, $botId, $text, $userId);
+            showAdminPermissionsMainPanel($db, $tg, $botId, $text, $userId);
             exit;
         }
 
         elseif ($step === 'admin_waiting_broadcast_groups') {
-            if (!hasPermission($db, $botId, $userId, 'broadcast')) exit;
+            if (!hasPermission($db, $botId, $userId, 'broadcast_groups')) exit;
             $stmt = $db->prepare("SELECT DISTINCT group_id FROM manhwas WHERE bot_id = :bot_id AND group_id IS NOT NULL");
             $stmt->execute(['bot_id' => $botId]);
             $groups = $stmt->fetchAll();
@@ -473,7 +555,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_assign_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'team')) exit;
+            if (!hasPermission($db, $botId, $userId, 'team_assign')) exit;
             $paramsStr = str_replace('admin_waiting_assign_', '', $step);
             $parts     = explode('_', $paramsStr);
             $manhwaId  = (int)$parts[0];
@@ -512,7 +594,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_exam_title_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+            if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
             $examRole = str_replace('admin_waiting_exam_title_', '', $step);
 
             $stmtFile = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = :key LIMIT 1");
@@ -549,7 +631,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_rec_test_rules_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+            if (!hasPermission($db, $botId, $userId, 'rec_rules')) exit;
             $recRole = str_replace('admin_waiting_rec_test_rules_', '', $step);
 
             $stmtFile = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = :key LIMIT 1");
@@ -587,7 +669,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_reject_reason_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'salary')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_chapter_reject')) exit;
             $chapterId = (int)str_replace('admin_waiting_reject_reason_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -614,7 +696,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_m_rate_trans_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_rates_specific')) exit;
             $manhwaId = (int)str_replace('admin_waiting_m_rate_trans_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -628,7 +710,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_m_rate_clean_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_rates_specific')) exit;
             $manhwaId = (int)str_replace('admin_waiting_m_rate_clean_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -642,7 +724,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_m_rate_type_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+            if (!hasPermission($db, $botId, $userId, 'sal_rates_specific')) exit;
             $manhwaId = (int)str_replace('admin_waiting_m_rate_type_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -656,7 +738,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_ticket_response_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'tickets')) exit;
+            if (!hasPermission($db, $botId, $userId, 'tickets_reply')) exit;
             $ticketId = (int)str_replace('admin_waiting_ticket_response_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -675,7 +757,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_warn_reason_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'warning')) exit;
+            if (!hasPermission($db, $botId, $userId, 'warn_user')) exit;
             $targetUserId = str_replace('admin_waiting_warn_reason_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -689,7 +771,7 @@ if ($message) {
         }
 
         elseif (strpos($step, 'admin_waiting_dm_text_') === 0) {
-            if (!hasPermission($db, $botId, $userId, 'warning') && !hasPermission($db, $botId, $userId, 'team')) exit;
+            if (!hasPermission($db, $botId, $userId, 'warn_user')) exit;
             $targetUserId = str_replace('admin_waiting_dm_text_', '', $step);
             FSM::clearStep($botId, $userId);
 
@@ -704,7 +786,7 @@ if ($message) {
     }
 
     if ($step === 'admin_waiting_exam_file') {
-        if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+        if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
         $fileId   = null;
         $fileType = 'doc';
 
@@ -745,7 +827,7 @@ if ($message) {
     }
 
     if (strpos($step, 'admin_waiting_rec_test_file_') === 0) {
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_rules')) exit;
         $recRole = str_replace('admin_waiting_rec_test_file_', '', $step);
         
         $fileId   = null;
@@ -794,7 +876,7 @@ if ($callbackQuery) {
 
     if (strpos($callbackData, 'admin_usr_confirmban_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'add_admin') && !hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'user_ban')) exit;
         $targetUserId = str_replace('admin_usr_confirmban_', '', $callbackData);
 
         FSM::setStatus($botId, $targetUserId, 'banned');
@@ -822,7 +904,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_usr_ban_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'add_admin') && !hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'user_ban')) exit;
         $targetUserId = str_replace('admin_usr_ban_', '', $callbackData);
 
         $keyboard = [
@@ -840,7 +922,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_manual_recruit_menu') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '🔍 جستجو و افزودن تک عضو', 'callback_data' => 'admin_manual_search']],
@@ -854,17 +936,17 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_manual_search') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_manual_search');
         $tg->sendMessage($userId, "👤 <b>لطفاً آیدی عددی تلگرام یا یوزرنیم کاربر مورد نظر را ارسال کنید:</b>\n\nکاربر ابتدا باید ربات را استارت کرده باشد.", [
-            'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manual_recruit_menu']]]
+            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_manual_recruit_menu']]]
         ]);
         exit;
     }
 
     elseif ($callbackData === 'admin_manual_table') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_manual_table_input');
         $formatMsg = "📋 <b>جدول ثبت دستی پرسنل به صورت گروهی:</b>\n\n"
                    . "لطفاً لیست کاربران را دقیقاً بر اساس الگو و کاراکتر <code>|</code> در یک پیام بنویسید و بفرستید:\n\n"
@@ -872,14 +954,14 @@ if ($callbackQuery) {
                    . "⚠️ نام شغل‌ها فقط می‌تواند شامل موارد زیر باشد:\n"
                    . "«مترجم»، «کلینر»، «تایپیست»";
         $tg->sendMessage($userId, $formatMsg, [
-            'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manual_recruit_menu']]]
+            'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'admin_manual_recruit_menu']]]
         ]);
         exit;
     }
 
     elseif (strpos($callbackData, 'admin_set_man_role_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         $data = str_replace('admin_set_man_role_', '', $callbackData);
         $parts = explode('_', $data);
         $targetId = $parts[0];
@@ -914,7 +996,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_projects_page_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'manhwa')) exit;
+        if (!hasPermission($db, $botId, $userId, 'proj_edit')) exit;
         $page = (int)str_replace('admin_projects_page_', '', $callbackData);
         $limit = 10;
         $offset = ($page - 1) * $limit;
@@ -958,7 +1040,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_project_search_init') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'manhwa')) exit;
+        if (!hasPermission($db, $botId, $userId, 'proj_edit')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_project_search');
         $tg->sendMessage($userId, "🔍 نام یا بخشی از عنوان مانهوای مورد نظر را ارسال کنید:", [
             'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_projects_page_1']]]
@@ -968,7 +1050,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_view_manhwa_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'manhwa')) exit;
+        if (!hasPermission($db, $botId, $userId, 'proj_edit')) exit;
         $manhwaId = (int)str_replace('admin_view_manhwa_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT * FROM manhwas WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -1037,7 +1119,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_dismiss_list_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'team_dismiss')) exit;
         $params = str_replace('admin_dismiss_list_', '', $callbackData);
         $parts  = explode('_', $params);
         $manhwaId = (int)$parts[0];
@@ -1069,7 +1151,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_dismiss_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'team_dismiss')) exit;
         $params = str_replace('admin_dismiss_', '', $callbackData);
         $parts  = explode('_', $params);
         $mId    = (int)$parts[0];
@@ -1087,7 +1169,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_assign_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'team_assign')) exit;
         $params = str_replace('admin_assign_', '', $callbackData);
         
         FSM::setStep($botId, $userId, "admin_waiting_assign_{$params}");
@@ -1104,7 +1186,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_recruit') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
 
         $keyboard = [
             'inline_keyboard' => [
@@ -1122,7 +1204,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_upload_rec_test') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_rules')) exit;
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -1141,7 +1223,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_set_rec_test_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_rules')) exit;
         $recRole = str_replace('admin_set_rec_test_', '', $callbackData);
         FSM::setStep($botId, $userId, "admin_waiting_rec_test_file_{$recRole}");
 
@@ -1157,7 +1239,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_edit_rules') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_rules')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_rules');
 
         $keyboard = [
@@ -1172,7 +1254,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_view_tests') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
 
         $stmt = $db->prepare("
             SELECT st.*, u.full_name, u.username 
@@ -1188,6 +1270,11 @@ if ($callbackQuery) {
             $tg->sendMessage($userId, "⚠️ هیچ پاسخ تست بررسی نشده‌ای وجود ندارد.");
         } else {
             foreach ($tests as $t) {
+                // بررسی دسترسی تایید استخدام بر اساس تفکیک نقش داوطلب (۲۲ دسترسی جدید)
+                if ($t['role'] === 'translator' && !hasPermission($db, $botId, $userId, 'rec_translator')) continue;
+                if ($t['role'] === 'cleaner' && !hasPermission($db, $botId, $userId, 'rec_cleaner')) continue;
+                if ($t['role'] === 'typesetter' && !hasPermission($db, $botId, $userId, 'rec_typesetter')) continue;
+
                 $roleFarsi = getRoleFarsiAdmin($t['role']);
                 $msgText = "👤 کاربر: {$t['full_name']} (@{$t['username']})\n"
                          . "🆔 آیدی عددی: <code>{$t['user_id']}</code>\n"
@@ -1214,7 +1301,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_check_test_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         $testId = (int)str_replace('admin_check_test_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT file_id, role FROM submitted_tests WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -1247,7 +1334,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_msg_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit') && !hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'warn_user')) exit;
         $targetId = str_replace('admin_msg_', '', $callbackData);
         FSM::setStep($botId, $userId, "admin_send_msg_{$targetId}");
 
@@ -1263,7 +1350,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_reject_test_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         $testId = (int)str_replace('admin_reject_test_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT user_id, role FROM submitted_tests WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -1284,7 +1371,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_accept_test_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'recruit')) exit;
+        if (!hasPermission($db, $botId, $userId, 'rec_translator')) exit;
         $testId = (int)str_replace('admin_accept_test_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT user_id, role FROM submitted_tests WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -1362,7 +1449,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_general_settings') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '⏳ تنظیم روزهای اخطار عدم فعالیت', 'callback_data' => 'admin_set_warning_days']],
@@ -1375,7 +1462,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_set_warning_days') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'warning')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_warning_days');
 
         $keyboard = [
@@ -1390,7 +1477,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_manage_exams_page_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+        if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
 
         $page = (int)str_replace('admin_manage_exams_page_', '', $callbackData);
         $limit = 10;
@@ -1440,7 +1527,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ex_del_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+        if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
         $examId = (int)str_replace('admin_ex_del_', '', $callbackData);
 
         $stmt = $db->prepare("DELETE FROM practice_exams WHERE bot_id = :bot_id AND id = :id");
@@ -1454,7 +1541,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ex_edit_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+        if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
         $examId = (int)str_replace('admin_ex_edit_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "admin_waiting_exam_file");
@@ -1467,7 +1554,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_add_practice_exam') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+        if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -1486,7 +1573,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_select_exam_role_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'exams')) exit;
+        if (!hasPermission($db, $botId, $userId, 'exams_manage')) exit;
         $examRole = str_replace('admin_select_exam_role_', '', $callbackData);
         
         $stmt = $db->prepare("INSERT INTO settings (bot_id, key, value) VALUES (:bot_id, 'temp_exam_role', :value) ON CONFLICT (bot_id, key) DO UPDATE SET value = EXCLUDED.value");
@@ -1506,7 +1593,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_tickets_page_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'tickets')) exit;
+        if (!hasPermission($db, $botId, $userId, 'tickets_view')) exit;
 
         $page = (int)str_replace('admin_tickets_page_', '', $callbackData);
         $limit = 10;
@@ -1555,7 +1642,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ticket_view_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'tickets')) exit;
+        if (!hasPermission($db, $botId, $userId, 'tickets_view')) exit;
         $ticketId = (int)str_replace('admin_ticket_view_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT t.*, u.full_name, u.username FROM tickets t JOIN users u ON t.user_id = u.tg_id WHERE t.bot_id = :bot_id AND t.id = :id LIMIT 1");
@@ -1587,7 +1674,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ticket_reply_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'tickets')) exit;
+        if (!hasPermission($db, $botId, $userId, 'tickets_reply')) exit;
         $ticketId = (int)str_replace('admin_ticket_reply_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "admin_waiting_ticket_response_{$ticketId}");
@@ -1597,7 +1684,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ticket_close_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'tickets')) exit;
+        if (!hasPermission($db, $botId, $userId, 'tickets_reply')) exit;
         $ticketId = (int)str_replace('admin_ticket_close_', '', $callbackData);
 
         $stmt = $db->prepare("UPDATE tickets SET status = 'closed' WHERE bot_id = :bot_id AND id = :id");
@@ -1611,7 +1698,7 @@ if ($callbackQuery) {
         $tg->answerCallbackQuery($callbackId);
         $ticketId = (int)str_replace('admin_reply_ticket_', '', $callbackData);
         
-        if (!hasPermission($db, $botId, $userId, 'tickets')) {
+        if (!hasPermission($db, $botId, $userId, 'tickets_reply')) {
             $tg->sendMessage($userId, "⚠️ شما سطح دسترسی برای پاسخگویی به تیکت‌ها را ندارید.");
             exit;
         }
@@ -1628,8 +1715,32 @@ if ($callbackQuery) {
         exit;
     }
 
+    // هندل کالبک ورود به پنل ۵ گانه اصلی سطوح دسترسی ۲۲گانه ادمین
+    elseif (strpos($callbackData, 'admin_perms_main_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        if (!hasPermission($db, $botId, $userId, 'admin_perms')) exit;
+        $targetAdminId = (int)str_replace('admin_perms_main_', '', $callbackData);
+        showAdminPermissionsMainPanel($db, $tg, $botId, $targetAdminId, $adminChatId, $messageId);
+        exit;
+    }
+
+    // هندل کالبک نمایش جزییات دسترسی یکی از شاخه‌های ۵ گانه
+    elseif (strpos($callbackData, 'admin_perms_sub_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        if (!hasPermission($db, $botId, $userId, 'admin_perms')) exit;
+        $data = str_replace('admin_perms_sub_', '', $callbackData);
+        $parts = explode('_', $data);
+        $targetAdminId = (int)$parts[0];
+        $catId         = (int)$parts[1];
+        showAdminPermissionsSubPanel($db, $tg, $botId, $targetAdminId, $catId, $adminChatId, $messageId);
+        exit;
+    }
+
+    // سوییچ روشن/خاموش کردن دسترسی‌ها به روش نوین ۲۲گانه تودرتو
     elseif (strpos($callbackData, 'toggle_perm_') === 0) {
         $tg->answerCallbackQuery($callbackId);
+        
+        // فقط مالک اصلی ربات مانهوا توانایی ویرایش دسترسی‌های ادمین‌ها را دارد
         $stmtCheckOwner = $db->prepare("SELECT role FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
         $stmtCheckOwner->execute(['bot_id' => $botId, 'tg_id' => $userId]);
         $ownerCheck = $stmtCheckOwner->fetch();
@@ -1642,30 +1753,64 @@ if ($callbackQuery) {
         $data = str_replace('toggle_perm_', '', $callbackData);
         $parts = explode('_', $data);
         $targetAdminId = (int)$parts[0];
-        $permKey       = $parts[1];
+        
+        // استخراج و بازسازی کلید دسترسی با ترکیب مابقی بخش‌های آرایه
+        array_shift($parts);
+        $permKey = implode('_', $parts);
 
-        $whitelist = ['recruit', 'manhwa', 'team', 'salary', 'settings', 'broadcast', 'add_admin', 'tickets', 'exams', 'warning'];
+        $whitelist = [
+            'rec_translator', 'rec_cleaner', 'rec_typesetter', 'rec_rules',
+            'proj_add', 'proj_edit', 'proj_delete',
+            'team_assign', 'team_dismiss',
+            'sal_chapter_approve', 'sal_chapter_reject', 'sal_rates_global', 'sal_rates_specific',
+            'broadcast_groups', 'broadcast_users',
+            'admin_add', 'admin_perms',
+            'tickets_view', 'tickets_reply',
+            'exams_manage',
+            'warn_user', 'user_ban'
+        ];
+
         if (in_array($permKey, $whitelist)) {
             $dbField = "perm_" . $permKey;
             
-            $stmt = $db->prepare("
+            // ابتدا از ایجاد رکورد در جدول مطمئن می‌شویم
+            $stmtCheckExist = $db->prepare("SELECT 1 FROM admin_permissions WHERE bot_id = :bot_id AND user_id = :user_id LIMIT 1");
+            $stmtCheckExist->execute(['bot_id' => $botId, 'user_id' => $targetAdminId]);
+            if (!$stmtCheckExist->fetch()) {
+                $stmtIns = $db->prepare("INSERT INTO admin_permissions (bot_id, user_id) VALUES (:bot_id, :user_id)");
+                $stmtIns->execute(['bot_id' => $botId, 'user_id' => $targetAdminId]);
+            }
+
+            $stmtToggle = $db->prepare("
                 UPDATE admin_permissions 
                 SET {$dbField} = NOT {$dbField} 
                 WHERE bot_id = :bot_id AND user_id = :user_id
             ");
-            $stmt->execute([
+            $stmtToggle->execute([
                 'bot_id'  => $botId,
                 'user_id' => $targetAdminId
             ]);
 
-            showAdminPermissionsPanel($db, $tg, $botId, $targetAdminId, $adminChatId, $messageId);
+            // یافتن دسته مربوط به این کلید جهت رفرش در همان منوی والد
+            $catId = 5; // دسته پیش‌فرض ابزارها و امنیت
+            if (in_array($permKey, ['rec_translator', 'rec_cleaner', 'rec_typesetter', 'rec_rules'])) {
+                $catId = 1;
+            } elseif (in_array($permKey, ['proj_add', 'proj_edit', 'proj_delete'])) {
+                $catId = 2;
+            } elseif (in_array($permKey, ['team_assign', 'team_dismiss'])) {
+                $catId = 3;
+            } elseif (in_array($permKey, ['sal_chapter_approve', 'sal_chapter_reject', 'sal_rates_global', 'sal_rates_specific'])) {
+                $catId = 4;
+            }
+
+            showAdminPermissionsSubPanel($db, $tg, $botId, $targetAdminId, $catId, $adminChatId, $messageId);
         }
         exit;
     }
 
     elseif ($callbackData === 'admin_salary_rates') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
 
         $stmtRates = $db->prepare("SELECT key, value FROM settings WHERE bot_id = :bot_id AND key IN ('rate_translator', 'rate_cleaner', 'rate_typesetter')");
         $stmtRates->execute(['bot_id' => $botId]);
@@ -1696,7 +1841,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_change_rate_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_rates_global')) exit;
         $roleToSetRate = str_replace('admin_change_rate_', '', $callbackData);
         FSM::setStep($botId, $userId, "admin_waiting_rate_{$roleToSetRate}");
 
@@ -1765,7 +1910,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_broadcast') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'broadcast')) exit;
+        if (!hasPermission($db, $botId, $userId, 'broadcast_groups')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_broadcast_groups');
 
         $keyboard = [
@@ -1780,7 +1925,7 @@ if ($callbackQuery) {
 
     elseif ($callbackData === 'admin_add_admin') {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'add_admin')) exit;
+        if (!hasPermission($db, $botId, $userId, 'admin_perms')) exit;
         FSM::setStep($botId, $userId, 'admin_waiting_add_admin_id');
 
         $keyboard = [
@@ -1807,6 +1952,7 @@ if ($callbackQuery) {
         exit;
     }
 
+    // بازنویسی فاز نمایش اعضا به روش نوین و جذاب ۳ ستونه متقارن و خلوت
     elseif (strpos($callbackData, 'admin_team_list_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $page = (int)str_replace('admin_team_list_', '', $callbackData);
@@ -1818,18 +1964,28 @@ if ($callbackQuery) {
         $total = $stmtCount->fetch()['total'];
         $totalPages = ceil($total / $limit);
 
-        $stmt = $db->prepare("SELECT tg_id, full_name, role, monthly_chapters FROM users WHERE bot_id = :bot_id AND role != 'none' AND status = 'approved' ORDER BY joined_at ASC LIMIT :limit OFFSET :offset");
+        $stmt = $db->prepare("SELECT tg_id, full_name, role FROM users WHERE bot_id = :bot_id AND role != 'none' AND status = 'approved' ORDER BY joined_at ASC LIMIT :limit OFFSET :offset");
         $stmt->bindValue(':bot_id', $botId, PDO::PARAM_INT);
         $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
         $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
         $members = $stmt->fetchAll();
 
-        $textList = "👥 <b>لیست کلیه اعضای رسمی تیم (صفحه {$page} از {$totalPages}):</b>\n\nبرای مشاهده آمار فعالیت دوره‌ای و مدیریت اعضا روی دکمه جزئیات کلیک کنید:";
+        $textList = "👥 <b>لیست اعضای رسمی تیم (صفحه {$page} از {$totalPages}):</b>\n\n"
+                  . "جهت مشاهده کارکرد و مدیریت اعضا روی دکمه مشاهده در پنل زیر کلیک کنید:";
+
         $buttons = [];
-        $buttons[] = [['text' => '🔍 جستجوی عضو', 'callback_data' => 'admin_user_search_init']];
+        $buttons[] = [['text' => '🔍 جستجوی عضو تیم', 'callback_data' => 'admin_user_search_init']];
+
+        // ایجاد سربرگ تراز دکمه‌ها جهت آراستگی گرافیکی
+        $buttons[] = [
+            ['text' => '👁 مشاهده', 'callback_data' => 'dummy_header'],
+            ['text' => '💵 حقوق ماه', 'callback_data' => 'dummy_header'],
+            ['text' => '👤 نام عضو', 'callback_data' => 'dummy_header']
+        ];
 
         foreach ($members as $m) {
+            // محاسبه تراکنش ماه جاری عضو
             $stmtEarned = $db->prepare("
                 SELECT COALESCE(SUM(CASE 
                     WHEN translator_id = :u_id THEN translator_pay 
@@ -1844,11 +2000,19 @@ if ($callbackQuery) {
                   AND created_at >= CURRENT_TIMESTAMP - INTERVAL '30 day'
             ");
             $stmtEarned->execute(['bot_id' => $botId, 'u_id' => $m['tg_id']]);
-            $monthlyEarned = $stmtEarned->fetch()['m_earned'];
+            $monthlyEarned = (float)$stmtEarned->fetch()['m_earned'];
 
+            // فرمت فیلد مالی بر اساس الگو: اگر صفر باشد 0 و در غیر این صورت فاقد متن اضافه
+            $payFormatted = ($monthlyEarned == 0) ? '0' : number_format($monthlyEarned);
+
+            // کوتاه کردن نام‌های طولانی عضو و الصاق سه نقطه به انتهای آن
+            $truncatedName = mb_strimwidth($m['full_name'], 0, 14, '...');
+
+            // ردیف ۳ ستونه قرینه و آراسته
             $buttons[] = [
-                ['text' => "👤 {$m['full_name']} (" . number_format($monthlyEarned) . " ت این ماه)", 'callback_data' => "admin_user_v_{$m['tg_id']}"],
-                ['text' => '📊 جزئیات', 'callback_data' => "admin_user_v_{$m['tg_id']}"]
+                ['text' => '👁', 'callback_data' => "admin_user_v_{$m['tg_id']}"],
+                ['text' => $payFormatted, 'callback_data' => "admin_user_v_{$m['tg_id']}"],
+                ['text' => $truncatedName, 'callback_data' => "admin_user_v_{$m['tg_id']}"]
             ];
         }
 
@@ -1922,25 +2086,38 @@ if ($callbackQuery) {
                        . "📈 <b>گزارش کارکرد دوره‌ای:</b>\n"
                        . $statsText;
 
-            $keyboard = [
-                'inline_keyboard' => [
-                    [
-                        ['text' => '⚠️ اخطار کتبی', 'callback_data' => "admin_usr_warn_{$u['tg_id']}"],
-                        ['text' => '⛔️ بن و اخراج کامل', 'callback_data' => "admin_usr_ban_{$u['tg_id']}"]
-                    ],
-                    [['text' => '✉️ ارسال پیام مستقیم پی‌وی', 'callback_data' => "admin_usr_dm_{$u['tg_id']}"]],
-                    [['text' => '🔙 بازگشت به لیست اعضا', 'callback_data' => 'admin_team_list_1']]
-                ]
-            ];
+            $keyboard = [];
+            $keyboardRow1 = [];
 
-            $tg->sendMessage($userId, $detailMsg, $keyboard);
+            if (hasPermission($db, $botId, $userId, 'warn_user')) {
+                $keyboardRow1[] = ['text' => '⚠️ اخطار کتبی', 'callback_data' => "admin_usr_warn_{$u['tg_id']}"];
+            }
+            if (hasPermission($db, $botId, $userId, 'user_ban')) {
+                $keyboardRow1[] = ['text' => '⛔️ بن و اخراج کامل', 'callback_data' => "admin_usr_ban_{$u['tg_id']}"];
+            }
+            if (!empty($keyboardRow1)) {
+                $keyboard[] = $keyboardRow1;
+            }
+
+            if (hasPermission($db, $botId, $userId, 'warn_user')) {
+                $keyboard[] = [['text' => '✉️ ارسال پیام مستقیم پی‌وی', 'callback_data' => "admin_usr_dm_{$u['tg_id']}"]];
+            }
+
+            // نمایش دکمه شیشه‌ای تنظیم دسترسی برای کاربرانی که نقش ادمین یا مالک دارند
+            if (($u['role'] === 'admin' || $u['role'] === 'owner') && hasPermission($db, $botId, $userId, 'admin_perms')) {
+                $keyboard[] = [['text' => '🛡️ تنظیم سطوح دسترسی ۲۲گانه ادمین', 'callback_data' => "admin_perms_main_{$u['tg_id']}"]];
+            }
+
+            $keyboard[] = [['text' => '🔙 بازگشت به لیست اعضا', 'callback_data' => 'admin_team_list_1']];
+
+            $tg->sendMessage($userId, $detailMsg, ['inline_keyboard' => $keyboard]);
         }
         exit;
     }
 
     elseif (strpos($callbackData, 'admin_usr_warn_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'warning')) exit;
+        if (!hasPermission($db, $botId, $userId, 'warn_user')) exit;
         $targetUserId = str_replace('admin_usr_warn_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "admin_waiting_warn_reason_{$targetUserId}");
@@ -1950,7 +2127,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_usr_dm_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'warning') && !hasPermission($db, $botId, $userId, 'team')) exit;
+        if (!hasPermission($db, $botId, $userId, 'warn_user')) exit;
         $targetUserId = str_replace('admin_usr_dm_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "admin_waiting_dm_text_{$targetUserId}");
@@ -1960,7 +2137,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_manage_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'salary')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_chapter_approve')) exit;
         $parts = explode('_', str_replace('admin_manage_ch_', '', $callbackData));
         $manhwaId = (int)$parts[0];
         $page = isset($parts[1]) ? (int)$parts[1] : 1;
@@ -2015,7 +2192,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ch_chk_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'salary')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_chapter_approve')) exit;
         $chapterId = (int)str_replace('admin_ch_chk_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT c.*, m.title FROM chapters c JOIN manhwas m ON c.manhwa_id = m.id WHERE c.bot_id = :bot_id AND c.id = :id LIMIT 1");
@@ -2041,7 +2218,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_ch_rej_init_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'salary')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_chapter_reject')) exit;
         $chapterId = (int)str_replace('admin_ch_rej_init_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "admin_waiting_reject_reason_{$chapterId}");
@@ -2053,7 +2230,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_m_set_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_rates_specific')) exit;
         $manhwaId = (int)str_replace('admin_m_set_', '', $callbackData);
 
         $stmt = $db->prepare("SELECT * FROM manhwas WHERE bot_id = :bot_id AND id = :id LIMIT 1");
@@ -2082,7 +2259,7 @@ if ($callbackQuery) {
 
     elseif (strpos($callbackData, 'admin_m_rate_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        if (!hasPermission($db, $botId, $userId, 'settings')) exit;
+        if (!hasPermission($db, $botId, $userId, 'sal_rates_specific')) exit;
         $data = str_replace('admin_m_rate_', '', $callbackData);
         $parts = explode('_', $data);
         $manhwaId = (int)$parts[0];
