@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: master/master_handler.php
- * Role: Master Bot Processor with Real-time DB and Error-free Analytics
+ * Role: Master Bot Processor with Real-time DB, Error Catching and Safe Webhook Registration
  */
 
 // بررسی کانتکست و جلوگیری از خطای دسترسی غیرمجاز
@@ -41,83 +41,97 @@ $isSystemOwner = ($userId === OWNER_ID);
 // ---------------------------------------------------------
 if (!function_exists('registerBot')) {
     function registerBot($db, $tg, $tokenInput, $userId, $username, $fullName, $isSandbox = false) {
-        $tempTg = new Telegram($tokenInput);
-        $meResult = $tempTg->getMe();
+        try {
+            $tempTg = new Telegram($tokenInput);
+            $meResult = $tempTg->getMe();
 
-        if ($meResult && isset($meResult['ok']) && $meResult['ok'] === true) {
-            $botUsername = $meResult['result']['username'];
-            $botName     = $meResult['result']['first_name'];
+            if ($meResult && isset($meResult['ok']) && $meResult['ok'] === true) {
+                $botUsername = $meResult['result']['username'];
+                $botName     = $meResult['result']['first_name'];
 
-            // تشخیص پویای دامنه رندر جهت ست کردن وب‌هوک
-            $host = $_SERVER['HTTP_HOST'] ?? '';
-            if (empty($host)) {
-                $tg->sendMessage($userId, "❌ خطای سیستمی در تشخیص دامنه رندر رخ داده است.");
-                return false;
-            }
+                // تشخیص پویای دامنه رندر جهت ست کردن وب‌هوک
+                $host = $_SERVER['HTTP_HOST'] ?? '';
+                if (empty($host)) {
+                    $tg->sendMessage($userId, "❌ خطای سیستمی: دامنه سرور (HTTP_HOST) شناسایی نشد.");
+                    return false;
+                }
 
-            $webhookUrl = "https://{$host}/index.php?bot_token=" . urlencode($tokenInput);
-            $webhookResult = $tempTg->setWebhook($webhookUrl);
+                $webhookUrl = "https://{$host}/index.php?bot_token=" . urlencode($tokenInput);
+                $webhookResult = $tempTg->setWebhook($webhookUrl);
 
-            if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
-                // ثبت یا به روز رسانی ربات در دیتابیس
-                $stmt = $db->prepare("
-                    INSERT INTO bots (token, owner_id, bot_name, is_sandbox) 
-                    VALUES (:token, :owner_id, :bot_name, :is_sandbox)
-                    ON CONFLICT (token) DO UPDATE 
-                    SET owner_id = EXCLUDED.owner_id, bot_name = EXCLUDED.bot_name, is_sandbox = EXCLUDED.is_sandbox
-                    RETURNING id
-                ");
-                $stmt->execute([
-                    'token'      => $tokenInput,
-                    'owner_id'   => $userId,
-                    'bot_name'   => '@' . $botUsername,
-                    'is_sandbox' => $isSandbox ? true : false
-                ]);
-                $botRow = $stmt->fetch();
-                $newBotId = (int)$botRow['id'];
+                if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
+                    // ثبت یا به روز رسانی ربات در دیتابیس
+                    $stmt = $db->prepare("
+                        INSERT INTO bots (token, owner_id, bot_name, is_sandbox) 
+                        VALUES (:token, :owner_id, :bot_name, :is_sandbox)
+                        ON CONFLICT (token) DO UPDATE 
+                        SET owner_id = EXCLUDED.owner_id, bot_name = EXCLUDED.bot_name, is_sandbox = EXCLUDED.is_sandbox
+                        RETURNING id
+                    ");
+                    
+                    // حل نهایی مشکل تبدیل نادرست مقدار بولین در درایور PDO با ارسال صریح رشته‌های قابل فهم برای Postgres
+                    $stmt->execute([
+                        'token'      => $tokenInput,
+                        'owner_id'   => $userId,
+                        'bot_name'   => '@' . $botUsername,
+                        'is_sandbox' => $isSandbox ? 'true' : 'false'
+                    ]);
+                    $botRow = $stmt->fetch();
+                    
+                    if (!$botRow) {
+                        throw new Exception("خطا در بازگردانی شناسه ربات تازه ثبت شده از دیتابیس.");
+                    }
+                    
+                    $newBotId = (int)$botRow['id'];
 
-                // مقداردهی اولیه تنظیمات برای ربات جدید
-                $stmtSettings = $db->prepare("
-                    INSERT INTO settings (bot_id, key, value) VALUES 
-                    (:bot_id, 'rate_translator', '10000'),
-                    (:bot_id, 'rate_cleaner', '8000'),
-                    (:bot_id, 'rate_typesetter', '8000'),
-                    (:bot_id, 'rules', 'تست‌ها باید با کیفیت و بدون واترمارک باشند.')
-                    ON CONFLICT (bot_id, key) DO NOTHING
-                ");
-                $stmtSettings->execute(['bot_id' => $newBotId]);
+                    // مقداردهی اولیه تنظیمات برای ربات جدید
+                    $stmtSettings = $db->prepare("
+                        INSERT INTO settings (bot_id, key, value) VALUES 
+                        (:bot_id, 'rate_translator', '10000'),
+                        (:bot_id, 'rate_cleaner', '8000'),
+                        (:bot_id, 'rate_typesetter', '8000'),
+                        (:bot_id, 'rules', 'تست‌ها باید با کیفیت و بدون واترمارک باشند.')
+                        ON CONFLICT (bot_id, key) DO NOTHING
+                    ");
+                    $stmtSettings->execute(['bot_id' => $newBotId]);
 
-                // ثبت سازنده به عنوان مالک (owner) در ربات جدید
-                $stmtOwner = $db->prepare("
-                    INSERT INTO users (bot_id, tg_id, username, full_name, role, status)
-                    VALUES (:bot_id, :tg_id, :username, :full_name, 'owner', 'approved')
-                    ON CONFLICT (bot_id, tg_id) DO UPDATE 
-                    SET role = 'owner', status = 'approved'
-                ");
-                $stmtOwner->execute([
-                    'bot_id'    => $newBotId,
-                    'tg_id'     => $userId,
-                    'username'  => $username,
-                    'full_name' => $fullName
-                ]);
+                    // ثبت سازنده به عنوان مالک (owner) در ربات جدید
+                    $stmtOwner = $db->prepare("
+                        INSERT INTO users (bot_id, tg_id, username, full_name, role, status)
+                        VALUES (:bot_id, :tg_id, :username, :full_name, 'owner', 'approved')
+                        ON CONFLICT (bot_id, tg_id) DO UPDATE 
+                        SET role = 'owner', status = 'approved'
+                    ");
+                    $stmtOwner->execute([
+                        'bot_id'    => $newBotId,
+                        'tg_id'     => $userId,
+                        'username'  => $username,
+                        'full_name' => $fullName
+                    ]);
 
-                FSM::clearStep(0, $userId);
+                    FSM::clearStep(0, $userId);
 
-                $keyboard = [
-                    'inline_keyboard' => [
-                        [['text' => '🚀 ورود به ربات مانهوا', 'url' => "https://t.me/{$botUsername}"]],
-                        [['text' => '🔙 بازگشت به منوی ربات‌ساز', 'callback_data' => 'master_cancel']]
-                    ]
-                ];
+                    $keyboard = [
+                        'inline_keyboard' => [
+                            [['text' => '🚀 ورود به ربات مانهوا', 'url' => "https://t.me/{$botUsername}"]],
+                            [['text' => '🔙 بازگشت به منوی ربات‌ساز', 'callback_data' => 'master_cancel']]
+                        ]
+                    ];
 
-                $typeLabel = $isSandbox ? " (نسخه سندباکس)" : "";
-                $tg->sendMessage($userId, "🎉 <b>تبریک می‌گویم! ربات اختصاصی شما{$typeLabel} ساخته شد.</b>\n\n🤖 آیدی ربات: @{$botUsername}\n⚙️ نام نمایشی: {$botName}\n\n👇 وارد ربات خود شوید و دکمه <code>/start</code> را بفرستید تا کنترل پنل کامل ادمین تیم مانهوا برایتان باز شود.", $keyboard);
-                return true;
+                    $typeLabel = $isSandbox ? " (نسخه سندباکس)" : "";
+                    $tg->sendMessage($userId, "🎉 <b>تبریک می‌گویم! ربات اختصاصی شما{$typeLabel} ساخته شد.</b>\n\n🤖 آیدی ربات: @{$botUsername}\n⚙️ نام نمایشی: {$botName}\n\n👇 وارد ربات خود شوید و دکمه <code>/start</code> را بفرستید تا کنترل پنل کامل ادمین تیم مانهوا برایتان باز شود.", $keyboard);
+                    return true;
+                } else {
+                    $reason = $webhookResult['description'] ?? 'دلیل نامشخص از تلگرام';
+                    $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد.\nدلیل: <code>{$reason}</code>");
+                }
             } else {
-                $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد.");
+                $reason = $meResult['description'] ?? 'پاسخ نامشخص تلگرام';
+                $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد.\nدلیل: <code>{$reason}</code>");
             }
-        } else {
-            $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد.");
+        } catch (Exception $e) {
+            $tg->sendMessage($userId, "❌ <b>خطای سیستمی رخ داد:</b>\n\n<code>" . htmlspecialchars($e->getMessage()) . "</code>");
+            error_log("Master Bot Registration Exception: " . $e->getMessage());
         }
         return false;
     }
@@ -238,111 +252,107 @@ if ($callbackQuery) {
 
     // کالبک اختصاصی مالک: مانیتورینگ زنده و نمایش ۲۲ شاخص آماری کل سرور به صورت تفکیک‌شده (بدون خطا)
     elseif ($callbackData === 'master_owner_stats' && $isSystemOwner) {
-        
-        // کوئری ۱: تحلیل کاربران کل ربات‌ها با روش تجمیع شرطی
-        $stmtUserStats = $db->prepare("
-            SELECT 
-                COUNT(DISTINCT tg_id) as total_users,
-                COUNT(DISTINCT CASE WHEN role = 'owner' THEN tg_id END) as total_owners,
-                COUNT(DISTINCT CASE WHEN role = 'admin' THEN tg_id END) as total_admins,
-                COUNT(DISTINCT CASE WHEN role = 'translator' AND status = 'approved' THEN tg_id END) as total_translators,
-                COUNT(DISTINCT CASE WHEN role = 'cleaner' AND status = 'approved' THEN tg_id END) as total_cleaners,
-                COUNT(DISTINCT CASE WHEN role = 'typesetter' AND status = 'approved' THEN tg_id END) as total_typesetters,
-                COUNT(CASE WHEN status = 'pending_test' THEN 1 END) as pending_recruits,
-                COALESCE(SUM(total_earned), 0) as total_earned_sum
-            FROM users 
-            WHERE bot_id > 0;
-        ");
-        $stmtUserStats->execute();
-        $uStats = $stmtUserStats->fetch();
+        try {
+            $stmtUserStats = $db->prepare("
+                SELECT 
+                    COUNT(DISTINCT tg_id) as total_users,
+                    COUNT(DISTINCT CASE WHEN role = 'owner' THEN tg_id END) as total_owners,
+                    COUNT(DISTINCT CASE WHEN role = 'admin' THEN tg_id END) as total_admins,
+                    COUNT(DISTINCT CASE WHEN role = 'translator' AND status = 'approved' THEN tg_id END) as total_translators,
+                    COUNT(DISTINCT CASE WHEN role = 'cleaner' AND status = 'approved' THEN tg_id END) as total_cleaners,
+                    COUNT(DISTINCT CASE WHEN role = 'typesetter' AND status = 'approved' THEN tg_id END) as total_typesetters,
+                    COUNT(CASE WHEN status = 'pending_test' THEN 1 END) as pending_recruits,
+                    COALESCE(SUM(total_earned), 0) as total_earned_sum
+                FROM users 
+                WHERE bot_id > 0;
+            ");
+            $stmtUserStats->execute();
+            $uStats = $stmtUserStats->fetch();
 
-        // کوئری ۲: تحلیل مانهواهای ثبت شده
-        $stmtManhwaStats = $db->prepare("
-            SELECT 
-                COUNT(*) as total_manhwas,
-                COUNT(CASE WHEN group_id IS NOT NULL THEN 1 END) as connected_manhwas
-            FROM manhwas;
-        ");
-        $stmtManhwaStats->execute();
-        $mStats = $stmtManhwaStats->fetch();
+            $stmtManhwaStats = $db->prepare("
+                SELECT 
+                    COUNT(*) as total_manhwas,
+                    COUNT(CASE WHEN group_id IS NOT NULL THEN 1 END) as connected_manhwas
+                FROM manhwas;
+            ");
+            $stmtManhwaStats->execute();
+            $mStats = $stmtManhwaStats->fetch();
 
-        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم
-        $stmtChapterStats = $db->prepare("
-            SELECT 
-                COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_chapters,
-                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_chapters,
-                COALESCE(SUM(CASE WHEN status = 'approved' THEN translator_pay ELSE 0 END), 0) as pay_translators,
-                COALESCE(SUM(CASE WHEN status = 'approved' THEN cleaner_pay ELSE 0 END), 0) as pay_cleaners,
-                COALESCE(SUM(CASE WHEN status = 'approved' THEN typesetter_pay ELSE 0 END), 0) as pay_typesetters
-            FROM chapters;
-        ");
-        $stmtChapterStats->execute();
-        $cStats = $stmtChapterStats->fetch();
+            $stmtChapterStats = $db->prepare("
+                SELECT 
+                    COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_chapters,
+                    COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_chapters,
+                    COALESCE(SUM(CASE WHEN status = 'approved' THEN translator_pay ELSE 0 END), 0) as pay_translators,
+                    COALESCE(SUM(CASE WHEN status = 'approved' THEN cleaner_pay ELSE 0 END), 0) as pay_cleaners,
+                    COALESCE(SUM(CASE WHEN status = 'approved' THEN typesetter_pay ELSE 0 END), 0) as pay_typesetters
+                FROM chapters;
+            ");
+            $stmtChapterStats->execute();
+            $cStats = $stmtChapterStats->fetch();
 
-        // کوئری ۴: تحلیل آماری آزمون‌های استخدامی داوطلبان
-        $stmtTestStats = $db->prepare("
-            SELECT 
-                COUNT(*) as total_tests,
-                COUNT(CASE WHEN status = 'accepted' THEN 1 END) as accepted_tests,
-                COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_tests
-            FROM submitted_tests;
-        ");
-        $stmtTestStats->execute();
-        $tStats = $stmtTestStats->fetch();
+            $stmtTestStats = $db->prepare("
+                SELECT 
+                    COUNT(*) as total_tests,
+                    COUNT(CASE WHEN status = 'accepted' THEN 1 END) as accepted_tests,
+                    COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_tests
+                FROM submitted_tests;
+            ");
+            $stmtTestStats->execute();
+            $tStats = $stmtTestStats->fetch();
 
-        // کوئری ۵: تحلیل تیکت‌ها و آزمون‌های تمرینی عمومی
-        $stmtMiscStats = $db->prepare("
-            SELECT 
-                (SELECT COUNT(*) FROM tickets) as total_tickets,
-                (SELECT COUNT(*) FROM tickets WHERE status = 'open') as open_tickets,
-                (SELECT COUNT(*) FROM practice_exams) as total_exams,
-                (SELECT COUNT(*) FROM bots WHERE id > 0) as total_bots;
-        ");
-        $stmtMiscStats->execute();
-        $miscStats = $stmtMiscStats->fetch();
+            $stmtMiscStats = $db->prepare("
+                SELECT 
+                    (SELECT COUNT(*) FROM tickets) as total_tickets,
+                    (SELECT COUNT(*) FROM tickets WHERE status = 'open') as open_tickets,
+                    (SELECT COUNT(*) FROM practice_exams) as total_exams,
+                    (SELECT COUNT(*) FROM bots WHERE id > 0) as total_bots;
+            ");
+            $stmtMiscStats->execute();
+            $miscStats = $stmtMiscStats->fetch();
 
-        // محاسبه آمارهای ترکیبی
-        $totalPaidSum = (float)$cStats['pay_translators'] + (float)$cStats['pay_cleaners'] + (float)$cStats['pay_typesetters'];
+            $totalPaidSum = (float)$cStats['pay_translators'] + (float)$cStats['pay_cleaners'] + (float)$cStats['pay_typesetters'];
 
-        // نگارش گزارش کامل آماری ۲۲ شاخص متمایز سیستم
-        $statsText = "📊 <b>گزارش آماری ۲۲ شاخص متمایز کل سرور (مخصوص مالک کل):</b>\n\n"
-                   . "🤖 <b>بخش ربات‌ها:</b>\n"
-                   . "└ ۱. کل ربات‌های فعال ثبت شده: <code>{$miscStats['total_bots']}</code> ربات\n\n"
-                   . "👥 <b>بخش کاربران و پرسنل تیمی:</b>\n"
-                   . "├ ۲. کل کاربران ثبت شده در ربات‌ها: <code>{$uStats['total_users']}</code> نفر\n"
-                   . "├ ۳. تعداد مالکین ربات‌های مانهوا: <code>{$uStats['total_owners']}</code> نفر\n"
-                   . "├ ۴. تعداد کل ادمین‌های منتسب شده: <code>{$uStats['total_admins']}</code> نفر\n"
-                   . "├ ۵. مترجمین فعال تایید شده: <code>{$uStats['total_translators']}</code> نفر\n"
-                   . "├ ۶. کلینرهای فعال تایید شده: <code>{$uStats['total_cleaners']}</code> نفر\n"
-                   . "├ ۷. تایپیست‌های فعال تایید شده: <code>{$uStats['total_typesetters']}</code> نفر\n"
-                   . "└ ۸. کاندیداهای در انتظار بررسی استخدام: <code>{$uStats['pending_recruits']}</code> نفر\n\n"
-                   . "📚 <b>بخش مانهواها و پروژه‌ها:</b>\n"
-                   . "├ ۹. کل پروژه‌های مانهوای ثبت شده: <code>{$mStats['total_manhwas']}</code> عدد\n"
-                   . "└ ۱۰. مانهواهای فعال متصل به گروه کار: <code>{$mStats['connected_manhwas']}</code> عدد\n\n"
-                   . "🔢 <b>بخش چپترها و ارسال کارها:</b>\n"
-                   . "├ ۱۱. کل چپترهای تایید و ثبت شده: <code>{$cStats['approved_chapters']}</code> چپتر\n"
-                   . "└ ۱۲. چپترهای در انتظار تایید مدیریت: <code>{$cStats['pending_chapters']}</code> چپتر\n\n"
-                   . "💸 <b>بخش محاسبات مالی و حقوق‌ها:</b>\n"
-                   . "├ ۱۳. کل حقوق توزیع شده پرسنل: <code>" . number_format($totalPaidSum) . "</code> تومان\n"
-                   . "├ ۱۴. مجموع کیف پول فعلی اعضا: <code>" . number_format($uStats['total_earned_sum']) . "</code> تومان\n"
-                   . "├ ۱۵. سهم پرداختی به مترجمین: <code>" . number_format($cStats['pay_translators']) . "</code> تومان\n"
-                   . "├ ۱۶. سهم پرداختی به کلینرها: <code>" . number_format($cStats['pay_cleaners']) . "</code> تومان\n"
-                   . "└ ۱۷. سهم پرداختی به تایپیست‌ها: <code>" . number_format($cStats['pay_typesetters']) . "</code> تومان\n\n"
-                   . "📂 <b>بخش سنجش، آزمون‌ها و تیکت‌ها:</b>\n"
-                   . "├ ۱۸. مجموع تست‌های استخدامی ثبت شده: <code>{$tStats['total_tests']}</code> تست\n"
-                   . "├ ۱۹. تست‌های استخدامی پذیرفته‌شده: <code>{$tStats['accepted_tests']}</code> مورد\n"
-                   . "├ ۲۰. تست‌های استخدامی رد شده: <code>{$tStats['rejected_tests']}</code> مورد\n"
-                   . "├ ۲۱. کل تیکت‌های پشتیبانی باز شده: <code>{$miscStats['total_tickets']}</code> تیکت\n"
-                   . "├ ۲۲. تیکت‌های باز در انتظار پاسخ: <code>{$miscStats['open_tickets']}</code> تیکت\n"
-                   . "└ ۲۳. کل آزمون‌های تمرینی ثبت شده: <code>{$miscStats['total_exams']}</code> آزمون\n\n"
-                   . "🕒 <i>این گزارش بر اساس آخرین تراکنش‌های دیتابیس نئون به صورت زنده تولید شده است.</i>";
+            $statsText = "📊 <b>گزارش آماری ۲۲ شاخص متمایز کل سرور (مخصوص مالک کل):</b>\n\n"
+                       . "🤖 <b>بخش ربات‌ها:</b>\n"
+                       . "└ ۱. کل ربات‌های فعال ثبت شده: <code>{$miscStats['total_bots']}</code> ربات\n\n"
+                       . "👥 <b>بخش کاربران و پرسنل تیمی:</b>\n"
+                       . "├ ۲. کل کاربران ثبت شده در ربات‌ها: <code>{$uStats['total_users']}</code> نفر\n"
+                       . "├ ۳. تعداد مالکین ربات‌های مانهوا: <code>{$uStats['total_owners']}</code> نفر\n"
+                       . "├ ۴. تعداد کل ادمین‌های منتسب شده: <code>{$uStats['total_admins']}</code> نفر\n"
+                       . "├ ۵. مترجمین فعال تایید شده: <code>{$uStats['total_translators']}</code> نفر\n"
+                       . "├ ۶. کلینرهای فعال تایید شده: <code>{$uStats['total_cleaners']}</code> نفر\n"
+                       . "├ ۷. تایپیست‌های فعال تایید شده: <code>{$uStats['total_typesetters']}</code> نفر\n"
+                       . "└ ۸. کاندیداهای در انتظار بررسی استخدام: <code>{$uStats['pending_recruits']}</code> نفر\n\n"
+                       . "📚 <b>بخش مانهواها و پروژه‌ها:</b>\n"
+                       . "├ ۹. کل پروژه‌های مانهوای ثبت شده: <code>{$mStats['total_manhwas']}</code> عدد\n"
+                       . "└ ۱۰. مانهواهای فعال متصل به گروه کار: <code>{$mStats['connected_manhwas']}</code> عدد\n\n"
+                       . "🔢 <b>بخش چپترها و ارسال کارها:</b>\n"
+                       . "├ ۱۱. کل چپترهای تایید و ثبت شده: <code>{$cStats['approved_chapters']}</code> چپتر\n"
+                       . "└ ۱۲. چپترهای در انتظار تایید مدیریت: <code>{$cStats['pending_chapters']}</code> چپتر\n\n"
+                       . "💸 <b>بخش محاسبات مالی و حقوق‌ها:</b>\n"
+                       . "├ ۱۳. کل حقوق توزیع شده پرسنل: <code>" . number_format($totalPaidSum) . "</code> تومان\n"
+                       . "├ ۱۴. مجموع کیف پول فعلی اعضا: <code>" . number_format($uStats['total_earned_sum']) . "</code> تومان\n"
+                       . "├ ۱۵. سهم پرداختی به مترجمین: <code>" . number_format($cStats['pay_translators']) . "</code> تومان\n"
+                       . "├ ۱۶. سهم پرداختی به کلینرها: <code>" . number_format($cStats['pay_cleaners']) . "</code> تومان\n"
+                       . "└ ۱۷. سهم پرداختی به تایپیست‌ها: <code>" . number_format($cStats['pay_typesetters']) . "</code> تومان\n\n"
+                       . "📂 <b>بخش سنجش، آزمون‌ها و تیکت‌ها:</b>\n"
+                       . "├ ۱۸. مجموع تست‌های استخدامی ثبت شده: <code>{$tStats['total_tests']}</code> تست\n"
+                       . "├ ۱۹. تست‌های استخدامی پذیرفته‌شده: <code>{$tStats['accepted_tests']}</code> مورد\n"
+                       . "├ ۲۰. تست‌های استخدامی رد شده: <code>{$tStats['rejected_tests']}</code> مورد\n"
+                       . "├ ۲۱. کل تیکت‌های پشتیبانی باز شده: <code>{$miscStats['total_tickets']}</code> تیکت\n"
+                       . "├ ۲۲. تیکت‌های باز در انتظار پاسخ: <code>{$miscStats['open_tickets']}</code> تیکت\n"
+                       . "└ ۲۳. کل آزمون‌های تمرینی ثبت شده: <code>{$miscStats['total_exams']}</code> آزمون\n\n"
+                       . "🕒 <i>این گزارش بر اساس آخرین تراکنش‌های دیتابیس نئون به صورت زنده تولید شده است.</i>";
 
-        $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'master_cancel']]
-            ]
-        ];
-        $tg->sendMessage($userId, $statsText, $keyboard);
+            $keyboard = [
+                'inline_keyboard' => [
+                    [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'master_cancel']]
+                ]
+            ];
+            $tg->sendMessage($userId, $statsText, $keyboard);
+        } catch (Exception $e) {
+            $tg->sendMessage($userId, "❌ خطای سیستمی در واکشی آمار سرور: " . $e->getMessage());
+        }
         exit;
     }
 }
