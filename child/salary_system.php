@@ -2,11 +2,11 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/salary_system.php
- * Role: Financial calculations, Payout Processor, Lazy Monthly Reset & Activity Monitor
+ * Role: Financial calculations, Payout Processor, Lazy Monthly Reset & Activity Monitor with 22-Way Permissions Integration
  */
 
 // اطمینان از صحت کانتکست لود شده
-if (!isset($botContext) || !isset($tg) || !isset($db)) {
+if (!isset($botContext, $tg, $db)) {
     exit;
 }
 
@@ -87,11 +87,17 @@ if (!function_exists('checkInactiveManhwas')) {
             return;
         }
 
-        // واکشی لیست تمامی ادمین‌ها و مالک این ربات جهت تگ کردن در پیام هشدار
+        // واکشی لیست ادمین‌های مسئول هشدارهای انضباطی (perm_warn_user) و مالک جهت منشن
         $stmtAdmins = $db->prepare("
-            SELECT tg_id, full_name 
-            FROM users 
-            WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved'
+            SELECT u.tg_id, u.full_name 
+            FROM users u
+            LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
+            WHERE u.bot_id = :bot_id 
+              AND u.status = 'approved'
+              AND (
+                  u.role = 'owner' 
+                  OR (u.role = 'admin' AND ap.perm_warn_user = TRUE)
+              )
         ");
         $stmtAdmins->execute(['bot_id' => $botId]);
         $admins = $stmtAdmins->fetchAll();
@@ -276,7 +282,7 @@ if (!function_exists('processChapterRejection')) {
 }
 
 // ==========================================
-// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین
+// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین با کنترل ۲۲ دسترسی جدید
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -287,8 +293,14 @@ if ($callbackQuery) {
     // الف) تایید چپتر و پرداخت حقوق
     if (strpos($callbackData, 'admin_approve_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        $chapterId = (int)str_replace('admin_approve_ch_', '', $callbackData);
+        
+        // اعتبارسنجی تایید تراکنش و حقوق (دسترسی perm_sal_chapter_approve در سیستم ۲۲گانه)
+        if (!hasPermission($db, $botId, $adminChatId, 'sal_chapter_approve')) {
+            $tg->sendMessage($adminChatId, "⚠️ شما سطح دسترسی برای تایید چپترها و پرداخت حقوق را ندارید.");
+            exit;
+        }
 
+        $chapterId = (int)str_replace('admin_approve_ch_', '', $callbackData);
         $result = processChapterApproval($db, $tg, $botId, $chapterId, $adminChatId);
 
         if ($result === true) {
@@ -302,8 +314,14 @@ if ($callbackQuery) {
     // ب) رد چپتر
     elseif (strpos($callbackData, 'admin_reject_ch_') === 0) {
         $tg->answerCallbackQuery($callbackId);
-        $chapterId = (int)str_replace('admin_reject_ch_', '', $callbackData);
 
+        // اعتبارسنجی لغو تراکنش و حقوق (دسترسی perm_sal_chapter_reject در سیستم ۲۲گانه)
+        if (!hasPermission($db, $botId, $adminChatId, 'sal_chapter_reject')) {
+            $tg->sendMessage($adminChatId, "⚠️ شما سطح دسترسی برای رد چپترها را ندارید.");
+            exit;
+        }
+
+        $chapterId = (int)str_replace('admin_reject_ch_', '', $callbackData);
         $result = processChapterRejection($db, $tg, $botId, $chapterId, $adminChatId);
 
         if ($result === true) {
