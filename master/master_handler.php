@@ -36,6 +36,93 @@ $step = $user['step'] ?? 'idle';
 // بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل سیستم است یا خیر
 $isSystemOwner = ($userId === OWNER_ID);
 
+// ---------------------------------------------------------
+// تابع کمکی جهت ثبت نهایی ربات مانهوا در دیتابیس و تنظیم وب‌هوک
+// ---------------------------------------------------------
+if (!function_exists('registerBot')) {
+    function registerBot($db, $tg, $tokenInput, $userId, $username, $fullName, $isSandbox = false) {
+        $tempTg = new Telegram($tokenInput);
+        $meResult = $tempTg->getMe();
+
+        if ($meResult && isset($meResult['ok']) && $meResult['ok'] === true) {
+            $botUsername = $meResult['result']['username'];
+            $botName     = $meResult['result']['first_name'];
+
+            // تشخیص پویای دامنه رندر جهت ست کردن وب‌هوک
+            $host = $_SERVER['HTTP_HOST'] ?? '';
+            if (empty($host)) {
+                $tg->sendMessage($userId, "❌ خطای سیستمی در تشخیص دامنه رندر رخ داده است.");
+                return false;
+            }
+
+            $webhookUrl = "https://{$host}/index.php?bot_token=" . urlencode($tokenInput);
+            $webhookResult = $tempTg->setWebhook($webhookUrl);
+
+            if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
+                // ثبت یا به روز رسانی ربات در دیتابیس
+                $stmt = $db->prepare("
+                    INSERT INTO bots (token, owner_id, bot_name, is_sandbox) 
+                    VALUES (:token, :owner_id, :bot_name, :is_sandbox)
+                    ON CONFLICT (token) DO UPDATE 
+                    SET owner_id = EXCLUDED.owner_id, bot_name = EXCLUDED.bot_name, is_sandbox = EXCLUDED.is_sandbox
+                    RETURNING id
+                ");
+                $stmt->execute([
+                    'token'      => $tokenInput,
+                    'owner_id'   => $userId,
+                    'bot_name'   => '@' . $botUsername,
+                    'is_sandbox' => $isSandbox ? true : false
+                ]);
+                $botRow = $stmt->fetch();
+                $newBotId = (int)$botRow['id'];
+
+                // مقداردهی اولیه تنظیمات برای ربات جدید
+                $stmtSettings = $db->prepare("
+                    INSERT INTO settings (bot_id, key, value) VALUES 
+                    (:bot_id, 'rate_translator', '10000'),
+                    (:bot_id, 'rate_cleaner', '8000'),
+                    (:bot_id, 'rate_typesetter', '8000'),
+                    (:bot_id, 'rules', 'تست‌ها باید با کیفیت و بدون واترمارک باشند.')
+                    ON CONFLICT (bot_id, key) DO NOTHING
+                ");
+                $stmtSettings->execute(['bot_id' => $newBotId]);
+
+                // ثبت سازنده به عنوان مالک (owner) در ربات جدید
+                $stmtOwner = $db->prepare("
+                    INSERT INTO users (bot_id, tg_id, username, full_name, role, status)
+                    VALUES (:bot_id, :tg_id, :username, :full_name, 'owner', 'approved')
+                    ON CONFLICT (bot_id, tg_id) DO UPDATE 
+                    SET role = 'owner', status = 'approved'
+                ");
+                $stmtOwner->execute([
+                    'bot_id'    => $newBotId,
+                    'tg_id'     => $userId,
+                    'username'  => $username,
+                    'full_name' => $fullName
+                ]);
+
+                FSM::clearStep(0, $userId);
+
+                $keyboard = [
+                    'inline_keyboard' => [
+                        [['text' => '🚀 ورود به ربات مانهوا', 'url' => "https://t.me/{$botUsername}"]],
+                        [['text' => '🔙 بازگشت به منوی ربات‌ساز', 'callback_data' => 'master_cancel']]
+                    ]
+                ];
+
+                $typeLabel = $isSandbox ? " (نسخه سندباکس)" : "";
+                $tg->sendMessage($userId, "🎉 <b>تبریک می‌گویم! ربات اختصاصی شما{$typeLabel} ساخته شد.</b>\n\n🤖 آیدی ربات: @{$botUsername}\n⚙️ نام نمایشی: {$botName}\n\n👇 وارد ربات خود شوید و دکمه <code>/start</code> را بفرستید تا کنترل پنل کامل ادمین تیم مانهوا برایتان باز شود.", $keyboard);
+                return true;
+            } else {
+                $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد.");
+            }
+        } else {
+            $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد.");
+        }
+        return false;
+    }
+}
+
 // ==========================================
 // ۲. پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
 // ==========================================
@@ -45,6 +132,15 @@ if ($callbackQuery) {
     $messageId    = $callbackQuery['message']['message_id'];
 
     $tg->answerCallbackQuery($callbackId);
+
+    // مدیریت کلیک دکمه‌های گزینش نوع ربات (ویژه مالک سیستم)
+    if (($callbackData === 'master_create_type_normal' || $callbackData === 'master_create_type_sandbox') && strpos($step, 'waiting_bot_type:') === 0) {
+        $tokenInput = str_replace('waiting_bot_type:', '', $step);
+        $isSandbox = ($callbackData === 'master_create_type_sandbox');
+        
+        registerBot($db, $tg, $tokenInput, $userId, $username, $fullName, $isSandbox);
+        exit;
+    }
 
     // دکمه لغو و بازگشت به منوی اصلی ربات‌ساز
     if ($callbackData === 'master_cancel') {
@@ -170,7 +266,7 @@ if ($callbackQuery) {
         $stmtManhwaStats->execute();
         $mStats = $stmtManhwaStats->fetch();
 
-        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم (با استفاده از مقادیر ایمن و Coalesce)
+        // کوئری ۳: تحلیل چپترها و توزیع مالی کل سیستم
         $stmtChapterStats = $db->prepare("
             SELECT 
                 COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_chapters,
@@ -293,7 +389,7 @@ if (!empty($text)) {
             exit;
         }
 
-        // --- رفع باگ ۱: بررسی عدم امکان ثبت مجدد و تصاحب غیرمجاز ربات دیگران (Bot Hijacking) ---
+        // --- بررسی عدم امکان تصاحب غیرمجاز ربات دیگران ---
         $stmtCheck = $db->prepare("SELECT owner_id FROM bots WHERE token = :token LIMIT 1");
         $stmtCheck->execute(['token' => $tokenInput]);
         $existingBot = $stmtCheck->fetch();
@@ -304,79 +400,29 @@ if (!empty($text)) {
                 exit;
             }
         }
-        // --------------------------------------------------------------------------------------
 
+        // اعتبارسنجی توکن از طریق تلگرام
         $tempTg = new Telegram($tokenInput);
         $meResult = $tempTg->getMe();
 
         if ($meResult && isset($meResult['ok']) && $meResult['ok'] === true) {
-            $botUsername = $meResult['result']['username'];
-            $botName     = $meResult['result']['first_name'];
-
-            // تشخیص پویای دامنه رندر جهت ست کردن وب‌هوک
-            $host = $_SERVER['HTTP_HOST'] ?? '';
-            if (empty($host)) {
-                $tg->sendMessage($userId, "❌ خطای سیستمی در تشخیص دامنه رندر رخ داده است.");
-                exit;
-            }
-
-            $webhookUrl = "https://{$host}/index.php?bot_token=" . urlencode($tokenInput);
-            $webhookResult = $tempTg->setWebhook($webhookUrl);
-
-            if ($webhookResult && isset($webhookResult['ok']) && $webhookResult['ok'] === true) {
-                // ثبت یا به روز رسانی ربات در دیتابیس (با توجه به بررسی بالا، این عملیات کاملا امن است)
-                $stmt = $db->prepare("
-                    INSERT INTO bots (token, owner_id, bot_name) 
-                    VALUES (:token, :owner_id, :bot_name)
-                    ON CONFLICT (token) DO UPDATE 
-                    SET owner_id = EXCLUDED.owner_id, bot_name = EXCLUDED.bot_name
-                    RETURNING id
-                ");
-                $stmt->execute([
-                    'token'    => $tokenInput,
-                    'owner_id' => $userId,
-                    'bot_name' => '@' . $botUsername
-                ]);
-                $botRow = $stmt->fetch();
-                $newBotId = (int)$botRow['id'];
-
-                // مقداردهی اولیه تنظیمات برای ربات جدید
-                $stmtSettings = $db->prepare("
-                    INSERT INTO settings (bot_id, key, value) VALUES 
-                    (:bot_id, 'rate_translator', '10000'),
-                    (:bot_id, 'rate_cleaner', '8000'),
-                    (:bot_id, 'rate_typesetter', '8000'),
-                    (:bot_id, 'rules', 'تست‌ها باید با کیفیت و بدون واترمارک باشند.')
-                    ON CONFLICT (bot_id, key) DO NOTHING
-                ");
-                $stmtSettings->execute(['bot_id' => $newBotId]);
-
-                // ثبت سازنده به عنوان مالک (owner) در ربات جدید
-                $stmtOwner = $db->prepare("
-                    INSERT INTO users (bot_id, tg_id, username, full_name, role, status)
-                    VALUES (:bot_id, :tg_id, :username, :full_name, 'owner', 'approved')
-                    ON CONFLICT (bot_id, tg_id) DO UPDATE 
-                    SET role = 'owner', status = 'approved'
-                ");
-                $stmtOwner->execute([
-                    'bot_id'    => $newBotId,
-                    'tg_id'     => $userId,
-                    'username'  => $username,
-                    'full_name' => $fullName
-                ]);
-
-                FSM::clearStep(0, $userId);
-
+            if ($isSystemOwner) {
+                // اگر فرستنده توکن مالک اصلی سیستم باشد، او را به پنل گزینش نوع ساختار هدایت می‌کنیم
+                FSM::setStep(0, $userId, 'waiting_bot_type:' . $tokenInput);
+                
                 $keyboard = [
                     'inline_keyboard' => [
-                        [['text' => '🚀 ورود به ربات مانهوا', 'url' => "https://t.me/{$botUsername}"]],
-                        [['text' => '🔙 بازگشت به منوی ربات‌ساز', 'callback_data' => 'master_cancel']]
+                        [
+                            ['text' => '🤖 ربات عادی', 'callback_data' => 'master_create_type_normal'],
+                            ['text' => '🧪 ربات سندباکس', 'callback_data' => 'master_create_type_sandbox']
+                        ],
+                        [['text' => '❌ لغو عملیات', 'callback_data' => 'master_cancel']]
                     ]
                 ];
-
-                $tg->sendMessage($userId, "🎉 <b>تبریک می‌گویم! ربات اختصاصی شما ساخته شد.</b>\n\n🤖 آیدی ربات: @{$botUsername}\n⚙️ نام نمایشی: {$botName}\n\n👇 وارد ربات خود شوید و دکمه <code>/start</code> را بفرستید تا کنترل پنل کامل ادمین تیم مانهوا برایتان باز شود.", $keyboard);
+                $tg->sendMessage($userId, "👤 <b>مالک محترم کل سیستم؛</b>\n\nلطفاً نوع ساختار اجرایی این ربات را مشخص کنید تا وب‌هوک به شکل مناسب هدایت شود:", $keyboard);
             } else {
-                $tg->sendMessage($userId, "❌ تلگرام درخواست ست کردن وب‌هوک را رد کرد.");
+                // برای کاربران عادی، ربات به صورت مستقیم و در حالت عادی ثبت می‌گردد
+                registerBot($db, $tg, $tokenInput, $userId, $username, $fullName, false);
             }
         } else {
             $tg->sendMessage($userId, "❌ <b>توکن نامعتبر است!</b>\n\nتوکن ارسالی توسط تلگرام تایید نشد.");
