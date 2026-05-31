@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: core/db.php
- * Role: Optimized Neon PostgreSQL (PDO) Database Connection Handler with Self-Healing Migrations
+ * Role: Optimized Neon PostgreSQL (PDO) Database Connection Handler with Isolated Migrations
  */
 
 require_once __DIR__ . '/config.php';
@@ -12,7 +12,8 @@ class DB {
     private static $instance = null;
 
     /**
-     * برقراری اتصال امن به دیتابیس PostgreSQL نئون
+     * برقراری اتصال امن و پرسرعت به دیتابیس PostgreSQL نئون
+     * بدون اجرای کدهای ساختاری سنگین در مسیر اتصالات زنده ربات
      * 
      * @return PDO
      * @throws Exception
@@ -57,25 +58,6 @@ class DB {
                     PDO::ATTR_PERSISTENT         => false
                 ]);
 
-                // اجرای خودکار هماهنگ‌سازی و ثبت ستون‌ها و جدول‌های جدید (Database Migration)
-                // این بخش برای جلوگیری از ارورهای مربوط به نبود ستون‌های مالی و تیکت‌ها به صورت هوشمند عمل می‌کند
-                self::$instance->exec("
-                    ALTER TABLE chapters ADD COLUMN IF NOT EXISTS translator_pay NUMERIC(15, 2) DEFAULT 0;
-                    ALTER TABLE chapters ADD COLUMN IF NOT EXISTS cleaner_pay NUMERIC(15, 2) DEFAULT 0;
-                    ALTER TABLE chapters ADD COLUMN IF NOT EXISTS typesetter_pay NUMERIC(15, 2) DEFAULT 0;
-                    ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_translator NUMERIC(15, 2) DEFAULT NULL;
-                    ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_cleaner NUMERIC(15, 2) DEFAULT NULL;
-                    ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_typesetter NUMERIC(15, 2) DEFAULT NULL;
-                    ALTER TABLE users ADD COLUMN IF NOT EXISTS warnings INT DEFAULT 0;
-                    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'open';
-                    CREATE TABLE IF NOT EXISTS group_rules (
-                        bot_id INT NOT NULL,
-                        group_id BIGINT NOT NULL,
-                        rules TEXT,
-                        PRIMARY KEY (bot_id, group_id)
-                    );
-                ");
-
             } catch (PDOException $e) {
                 // ثبت دقیق دلیل عدم اتصال به دیتابیس در بخش مانیتورینگ سرور رندر
                 error_log("PostgreSQL Database Connection Failure: " . $e->getMessage());
@@ -84,6 +66,91 @@ class DB {
         }
 
         return self::$instance;
+    }
+
+    /**
+     * همگام‌سازی و اعمال خودکار تغییرات دیتابیس (Migrations)
+     * این متد مجزا شده است تا فقط در مواقع نیاز فراخوانی شود و سربار اتصالات زنده را صفر کند.
+     * 
+     * @param PDO $db نمونه اتصال فعال به دیتابیس
+     * @return bool
+     */
+    public static function runMigrations($db) {
+        try {
+            // ۱. فیلدهای محاسبات مالی و هشدارهای انضباطی کاربر
+            $db->exec("
+                ALTER TABLE chapters ADD COLUMN IF NOT EXISTS translator_pay NUMERIC(15, 2) DEFAULT 0;
+                ALTER TABLE chapters ADD COLUMN IF NOT EXISTS cleaner_pay NUMERIC(15, 2) DEFAULT 0;
+                ALTER TABLE chapters ADD COLUMN IF NOT EXISTS typesetter_pay NUMERIC(15, 2) DEFAULT 0;
+                
+                ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_translator NUMERIC(15, 2) DEFAULT NULL;
+                ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_cleaner NUMERIC(15, 2) DEFAULT NULL;
+                ALTER TABLE manhwas ADD COLUMN IF NOT EXISTS rate_typesetter NUMERIC(15, 2) DEFAULT NULL;
+                
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS warnings INT DEFAULT 0;
+                ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'open';
+            ");
+
+            // ۲. ساختار جدید و تفکیکی جدول قوانین گروه‌های کاری به همراه عنوان و توضیحات
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS group_rules_list (
+                    id SERIAL PRIMARY KEY,
+                    bot_id INT NOT NULL,
+                    group_id BIGINT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            ");
+
+            // ۳. تضمین وجود جدول پایه ثبت دسترسی‌های ادمین‌ها
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS admin_permissions (
+                    bot_id INT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    PRIMARY KEY (bot_id, user_id)
+                );
+            ");
+
+            // ۴. پیاده‌سازی کامل ساختار دسترسی‌های ۲۲گانه جدید در جدول سطوح دسترسی ادمین
+            $db->exec("
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_rec_translator BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_rec_cleaner BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_rec_typesetter BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_rec_rules BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_proj_add BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_proj_edit BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_proj_delete BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_team_assign BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_team_dismiss BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_sal_chapter_approve BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_sal_chapter_reject BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_sal_rates_global BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_sal_rates_specific BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_broadcast_groups BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_broadcast_users BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_admin_add BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_admin_perms BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_tickets_view BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_tickets_reply BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_exams_manage BOOLEAN DEFAULT FALSE;
+                
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_warn_user BOOLEAN DEFAULT FALSE;
+                ALTER TABLE admin_permissions ADD COLUMN IF NOT EXISTS perm_user_ban BOOLEAN DEFAULT FALSE;
+            ");
+
+            return true;
+        } catch (PDOException $e) {
+            error_log("Database Migration Failure: " . $e->getMessage());
+            return false;
+        }
     }
 
     /**
