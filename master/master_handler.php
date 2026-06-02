@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: master/master_handler.php
- * Role: Master Bot Processor with Real-time DB, Error Catching and Safe Webhook Registration
+ * Role: Master Bot Processor with Real-time DB, Error Catching, Granular Bot Selection, and Mandatory Channel Join Lock
  */
 
 // بررسی کانتکست و جلوگیری از خطای دسترسی غیرمجاز
@@ -19,22 +19,100 @@ $tg = new Telegram(MASTER_BOT_TOKEN);
 // استخراج متغیرهای پیام یا کالبک‌کوئری
 $message       = $update['message'] ?? null;
 $callbackQuery = $update['callback_query'] ?? null;
+$callbackId    = $callbackQuery['id'] ?? null;
 
 $userId    = $message['from']['id'] ?? $callbackQuery['from']['id'] ?? null;
 $username  = $message['from']['username'] ?? $callbackQuery['from']['username'] ?? null;
-$fullName  = trim(($message['from']['first_name'] ?? $callbackQuery['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? $callbackQuery['from']['last_name'] ?? ''));
+$firstName = $message['from']['first_name'] ?? $callbackQuery['from']['first_name'] ?? '';
+$lastName  = $message['from']['last_name'] ?? $callbackQuery['from']['last_name'] ?? '';
+$fullName  = trim($firstName . ' ' . $lastName);
 $text      = $message['text'] ?? '';
 
 if (!$userId) {
     exit;
 }
 
-// ۱. ثبت یا به‌روزرسانی مشخصات کاربر در زمینه ربات مادر (bot_id = 0)
+// ثبت یا به‌روزرسانی مشخصات کاربر در زمینه ربات مادر (bot_id = 0)
 $user = FSM::initUser(0, $userId, $username, $fullName);
 $step = $user['step'] ?? 'idle';
 
 // بررسی اینکه آیا کاربر استارت‌کننده، مالک اصلی کل سیستم است یا خیر
 $isSystemOwner = ($userId === OWNER_ID);
+
+// =========================================================
+// فاز ۰: سیستم قفل جوین اجباری شیشه‌ای کانال مراجع توسعه (@arvan_dev)
+// =========================================================
+if (!function_exists('checkMasterJoin')) {
+    /**
+     * بررسی زنده عضویت کاربر در کانال توسعه با استفاده از متد تلگرام
+     */
+    function checkMasterJoin($tg, $userId) {
+        if ($userId === OWNER_ID) {
+            return true; // مالک اصلی سیستم معاف از قفل کانال تلگرام است
+        }
+        
+        $response = $tg->apiRequest('getChatMember', [
+            'chat_id' => '@arvan_dev',
+            'user_id' => $userId
+        ]);
+        
+        if ($response && isset($response['ok']) && $response['ok'] === true) {
+            $status = $response['result']['status'] ?? '';
+            return in_array($status, ['creator', 'administrator', 'member']);
+        }
+        return false;
+    }
+}
+
+$isJoined = checkMasterJoin($tg, $userId);
+
+// اگر کاربر عضو نبود، تمام سناریوها قفل و او را ملزم به عضویت در کانال می‌کنیم
+if (!$isJoined) {
+    $checkData = $callbackQuery['data'] ?? '';
+    
+    if ($checkData === 'master_check_join') {
+        $tg->answerCallbackQuery($callbackId, "در حال بررسی وضعیت عضویت شما...");
+        
+        $reCheck = checkMasterJoin($tg, $userId);
+        if ($reCheck) {
+            FSM::clearStep(0, $userId);
+            
+            $keyboard = [];
+            $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+            $keyboard[] = [
+                ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+                ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
+            ];
+
+            if ($isSystemOwner) {
+                $keyboard[] = [
+                    ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
+                    ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
+                ];
+            }
+
+            $tg->sendMessage($userId, "🎉 <b>عضویت شما با موفقیت تایید شد!</b>\n\nبه منوی اصلی ربات‌ساز آروان خوش آمدید. لطفاً گزینه مورد نظر خود را انتخاب کنید:", ['inline_keyboard' => $keyboard]);
+            exit;
+        } else {
+            $tg->sendMessage($userId, "⚠️ <b>شما هنوز عضو کانال رسمی توسعه‌دهندگان نشده‌اید!</b>\n\nلطفاً ابتدا از دکمه زیر وارد کانال شده، عضو شوید و سپس دکمه تایید بررسی عضویت را مجدداً لمس کنید.");
+            exit;
+        }
+    } else {
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '📢 عضویت در کانال توسعه‌دهندگان (Arvan Dev)', 'url' => 'https://t.me/arvan_dev']],
+                [['text' => '🔄 تایید و بررسی عضویت', 'callback_data' => 'master_check_join']]
+            ]
+        ];
+        
+        $lockText = "👋 سلام <b>{$fullName}</b> گرامی!\n\n"
+                  . "برای استفاده از ربات‌ساز مانهوا و دسترسی به تمام ابزارهای آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
+                  . "👇 پس از کلیک روی دکمه عضویت زیر، عضو کانال شده و سپس دکمه تایید بررسی عضویت را بفشارید تا ربات برای شما فعال شود:";
+        
+        $tg->sendMessage($userId, $lockText, $keyboard);
+        exit;
+    }
+}
 
 // ---------------------------------------------------------
 // تابع کمکی جهت ثبت نهایی ربات مانهوا در دیتابیس و تنظیم وب‌هوک
@@ -68,13 +146,11 @@ if (!function_exists('registerBot')) {
                         SET owner_id = EXCLUDED.owner_id, bot_name = EXCLUDED.bot_name, is_sandbox = EXCLUDED.is_sandbox
                         RETURNING id
                     ");
-                    
-                    // حل نهایی مشکل تبدیل نادرست مقدار بولین در درایور PDO با ارسال صریح رشته‌های قابل فهم برای Postgres
                     $stmt->execute([
                         'token'      => $tokenInput,
                         'owner_id'   => $userId,
                         'bot_name'   => '@' . $botUsername,
-                        'is_sandbox' => $isSandbox ? 'true' : 'false'
+                        'is_sandbox' => $isSandbox ? 1 : 0
                     ]);
                     $botRow = $stmt->fetch();
                     
@@ -138,12 +214,13 @@ if (!function_exists('registerBot')) {
 }
 
 // ==========================================
-// ۲. پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
+// فاز ۳: پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
     $callbackId   = $callbackQuery['id'];
     $messageId    = $callbackQuery['message']['message_id'];
+    $adminChatId  = $callbackQuery['message']['chat']['id'];
 
     $tg->answerCallbackQuery($callbackId);
 
@@ -179,15 +256,60 @@ if ($callbackQuery) {
         exit;
     }
 
-    // کالبک ساخت ربات جدید
+    // کالبک ساخت ربات جدید - نمایش لیست ربات‌هایی که می‌شود ساخت
     elseif ($callbackData === 'master_new_bot') {
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '📚 مدیریت تیم مانهوا', 'callback_data' => 'master_select_type_team']],
+                [['text' => '🔙 بازگشت به منو', 'callback_data' => 'master_cancel']]
+            ]
+        ];
+        
+        $textMenu = "➕ <b>انتخاب نوع ربات جهت ساخت:</b>\n\n"
+                  . "لطفاً نوع ربات مورد نظر خود را جهت ساخت انتخاب کنید تا وارد مراحل پیکربندی شویم:\n\n"
+                  . "⚠️ <i>در حال حاضر فقط سیستم مدیریت تیم کاری فعال است.</i>";
+                  
+        $tg->editMessageText($adminChatId, $messageId, $textMenu, $keyboard);
+        exit;
+    }
+
+    // کالبک انتخاب نوع ربات مدیریت تیم - نمایش توضیحات و نحوه دریافت توکن
+    elseif ($callbackData === 'master_select_type_team') {
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '📥 شروع ساخت و ارسال توکن', 'callback_data' => 'master_start_team_token']],
+                [['text' => '🔙 بازگشت به لیست', 'callback_data' => 'master_new_bot']]
+            ]
+        ];
+
+        $infoText = "📚 <b>ربات مدیریت تیم کاری مانهوا (سیستم چندمستأجری):</b>\n\n"
+                  . "این ربات یک ابزار همه‌جانبه برای اسکن‌ها و تیم‌های ترجمه مانهوا، مانگا و ناول است که امکانات زیر را ارائه می‌دهد:\n"
+                  . "🔹 سیستم پیشرفته استخدام با تست‌های ورودی داینامیک\n"
+                  . "🔹 فرمت ۳ ستونه آراسته لیست اعضای تیم همراه با گزارش تراکنش‌ها\n"
+                  . "🔹 پرداخت و تسویه حساب خودکار حقوق چپترها بر اساس نقش پرسنل\n"
+                  . "🔹 سیستم تیکتینگ یکپارچه و آزمون‌های تمرینی عمومی\n"
+                  . "🔹 پایش هوشمند پروژه‌های راکد و ارسال هشدارهای انضباطی به گروه‌ها\n\n"
+                  . "💡 <b>راهنمای دریافت توکن:</b>\n"
+                  . "۱. ابتدا وارد آیدی @BotFather در تلگرام شوید.\n"
+                  . "۲. دستور <code>/newbot</code> را بفرستید و یک نام و یوزرنیم برای ربات خود انتخاب کنید.\n"
+                  . "۳. توکن عددی ارسالی (HTTP API Token) را کپی کرده و آماده داشته باشید.\n\n"
+                  . "👇 جهت شروع فرآیند ساخت و ارسال توکن، دکمه زیر را لمس کنید:";
+
+        $tg->editMessageText($adminChatId, $messageId, $infoText, $keyboard);
+        exit;
+    }
+
+    // کالبک شروع ارسال توکن - فعال‌سازی FSM مرحله waiting_for_token
+    elseif ($callbackData === 'master_start_team_token') {
         FSM::setStep(0, $userId, 'waiting_for_token');
+        
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '❌ لغو عملیات', 'callback_data' => 'master_cancel']]
             ]
         ];
-        $tg->sendMessage($userId, "📥 <b>لطفاً توکن ربات مانهوای خود را ارسال کنید:</b>\n\nبرای این کار ابتدا به آیدی @BotFather در تلگرام رفته، ربات جدید بسازید و توکنی که به شما می‌دهد را کپی کرده و برای من بفرستید:", $keyboard);
+
+        $tg->sendMessage($userId, "📥 <b>بستر دریافت فعال شد.</b>\n\nلطفاً توکن دریافتی خود از @BotFather را ارسال کنید تا فرآیند ساخت آغاز شود:", $keyboard);
         exit;
     }
 
@@ -351,14 +473,14 @@ if ($callbackQuery) {
             ];
             $tg->sendMessage($userId, $statsText, $keyboard);
         } catch (Exception $e) {
-            $tg->sendMessage($userId, "❌ خطای سیستمی در واکشی آمار سرور: " . $e->getMessage());
+            $tg->sendMessage($userId, "❌ خطا در محاسبات زنده آماری سرور.");
         }
         exit;
     }
 }
 
 // ==========================================
-// ۳. پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
+// ۴. پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
 // ==========================================
 if (!empty($text)) {
     // دستور استارت ربات‌ساز اصلی
