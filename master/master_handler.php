@@ -1,8 +1,8 @@
 <?php
 /**
- * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
+ * Project: Arvan Create Bot Maker Platform
  * File: master/master_handler.php
- * Role: Master Bot Processor with Real-time DB, Error Catching, Granular Bot Selection, and Mandatory Channel Join Lock
+ * Role: Master Bot Processor with Try-Catch Webhook, Accurate Join Verification, and Arvan Create Branding
  */
 
 // بررسی کانتکست و جلوگیری از خطای دسترسی غیرمجاز
@@ -71,10 +71,9 @@ if (!$isJoined) {
     $checkData = $callbackQuery['data'] ?? '';
     
     if ($checkData === 'master_check_join') {
-        $tg->answerCallbackQuery($callbackId, "در حال بررسی وضعیت عضویت شما...");
-        
         $reCheck = checkMasterJoin($tg, $userId);
         if ($reCheck) {
+            $tg->answerCallbackQuery($callbackId, "✅ عضویت شما با موفقیت تایید شد!", false);
             FSM::clearStep(0, $userId);
             
             $keyboard = [];
@@ -91,10 +90,22 @@ if (!$isJoined) {
                 ];
             }
 
-            $tg->sendMessage($userId, "🎉 <b>عضویت شما با موفقیت تایید شد!</b>\n\nبه منوی اصلی ربات‌ساز آروان خوش آمدید. لطفاً گزینه مورد نظر خود را انتخاب کنید:", ['inline_keyboard' => $keyboard]);
+            $welcomeText = "سلام <b>{$fullName}</b> گرامی!\n"
+                         . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
+                         . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و ناول است.\n\n"
+                         . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
+
+            $adminChatId  = $callbackQuery['message']['chat']['id'] ?? $userId;
+            $messageId     = $callbackQuery['message']['message_id'] ?? null;
+
+            if ($messageId) {
+                $tg->editMessageText($adminChatId, $messageId, $welcomeText, ['inline_keyboard' => $keyboard]);
+            } else {
+                $tg->sendMessage($userId, $welcomeText, ['inline_keyboard' => $keyboard]);
+            }
             exit;
         } else {
-            $tg->sendMessage($userId, "⚠️ <b>شما هنوز عضو کانال رسمی توسعه‌دهندگان نشده‌اید!</b>\n\nلطفاً ابتدا از دکمه زیر وارد کانال شده، عضو شوید و سپس دکمه تایید بررسی عضویت را مجدداً لمس کنید.");
+            $tg->answerCallbackQuery($callbackId, "⚠️ هنوز عضو کانال نشده‌اید! ابتدا جوین شوید.", true);
             exit;
         }
     } else {
@@ -106,7 +117,7 @@ if (!$isJoined) {
         ];
         
         $lockText = "👋 سلام <b>{$fullName}</b> گرامی!\n\n"
-                  . "برای استفاده از ربات‌ساز مانهوا و دسترسی به تمام ابزارهای آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
+                  . "برای استفاده از ربات‌ساز آروان و دسترسی به تمام ابزارهای آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
                   . "👇 پس از کلیک روی دکمه عضویت زیر، عضو کانال شده و سپس دکمه تایید بررسی عضویت را بفشارید تا ربات برای شما فعال شود:";
         
         $tg->sendMessage($userId, $lockText, $keyboard);
@@ -214,7 +225,7 @@ if (!function_exists('registerBot')) {
 }
 
 // ==========================================
-// فاز ۳: پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
+// فاز ۲: پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -252,7 +263,12 @@ if ($callbackQuery) {
             ];
         }
         
-        $tg->sendMessage($userId, "🤖 به منوی اصلی ربات‌ساز خوش آمدید. گزینه مورد نظر خود را انتخاب کنید:", ['inline_keyboard' => $keyboard]);
+        $welcomeText = "سلام <b>{$fullName}</b> گرامی!\n"
+                     . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
+                     . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و ناول است.\n\n"
+                     . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
+
+        $tg->editMessageText($adminChatId, $messageId, $welcomeText, ['inline_keyboard' => $keyboard]);
         exit;
     }
 
@@ -282,7 +298,7 @@ if ($callbackQuery) {
             ]
         ];
 
-        $infoText = "📚 <b>ربات مدیریت تیم کاری مانهوا ):</b>\n\n"
+        $infoText = "📚 <b>ربات مدیریت تیم کاری مانهوا:</b>\n\n"
                   . "این ربات یک ابزار همه‌جانبه برای اسکن‌ها و تیم‌های ترجمه مانهوا، مانگا و ناول است که امکانات زیر را ارائه می‌دهد:\n"
                   . "🔹 سیستم پیشرفته استخدام با تست‌های ورودی داینامیک\n"
                   . "🔹 لیست اعضای تیم همراه با گزارش تراکنش‌ها\n"
@@ -291,8 +307,8 @@ if ($callbackQuery) {
                   . "🔹 پایش هوشمند پروژه‌های راکد و ارسال هشدارهای انضباطی به گروه‌ها\n\n"
                   . "💡 <b>راهنمای دریافت توکن:</b>\n"
                   . "۱. ابتدا وارد آیدی @BotFather در تلگرام شوید.\n"
-                  . "۲. دستور <code>/newbot</code> را بفرستید و یک نام و یوزرنیم برای ربات خود انتخاب کنید.\n"
-                  . "۳. توکن عددی ارسالی (HTTP API Token) را کپی کرده و آماده داشته باشید.\n\n"
+                  . "۲. دستور /newbot را بفرستید و یک نام و یوزرنیم برای ربات خود انتخاب کنید.\n"
+                  . "۳. توکن عددی ارسالی را کپی کرده و آماده داشته باشید.\n\n"
                   . "👇 جهت شروع فرآیند ساخت و ارسال توکن، دکمه زیر را لمس کنید:";
 
         $tg->editMessageText($adminChatId, $messageId, $infoText, $keyboard);
@@ -480,7 +496,7 @@ if ($callbackQuery) {
 }
 
 // ==========================================
-// ۴. پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
+// ۵. پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
 // ==========================================
 if (!empty($text)) {
     // دستور استارت ربات‌ساز اصلی
@@ -495,8 +511,8 @@ if (!empty($text)) {
         ];
 
         $welcome = "سلام <b>{$fullName}</b> گرامی!\n"
-                 . "به ربات‌ساز بزرگ <b>تیم مانهوا</b> خوش آمدید.\n\n"
-                 . "با این سیستم می‌توانید ربات پیشرفته اختصاصی خود را جهت مدیریت مانهوا، ترجمه، تایپ، کلینرها، محاسبه حقوق و سازماندهی کارهای تیم خود بسازید.\n\n"
+                 . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
+                 . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و ناول است.\n\n"
                  . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
         // نمایش گزینه‌های مانیتورینگ پیشرفته برای مالک کل سیستم
