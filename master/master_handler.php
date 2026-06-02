@@ -64,65 +64,72 @@ if (!function_exists('checkMasterJoin')) {
     }
 }
 
-$isJoined = checkMasterJoin($tg, $userId);
-
-// اگر کاربر عضو نبود، تمام سناریوها قفل و او را ملزم به عضویت در کانال می‌کنیم
-if (!$isJoined) {
-    $checkData = $callbackQuery['data'] ?? '';
+// ۱. پردازش فوری و زودهنگام کالبک بررسی عضویت جهت جلوگیری از تداخل فلوها
+$checkData = $callbackQuery['data'] ?? '';
+if ($checkData === 'master_check_join') {
+    $reCheck = checkMasterJoin($tg, $userId);
     
-    if ($checkData === 'master_check_join') {
-        $reCheck = checkMasterJoin($tg, $userId);
-        if ($reCheck) {
-            $tg->answerCallbackQuery($callbackId, "✅ عضویت شما با موفقیت تایید شد!", false);
-            FSM::clearStep(0, $userId);
-            
-            $keyboard = [];
-            $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+    if ($reCheck) {
+        // خاموش کردن لودینگ دکمه شیشه‌ای با پیام موفقیت‌آمیز
+        $tg->answerCallbackQuery($callbackId, "✅ عضویت شما تایید شد!", false);
+        FSM::clearStep(0, $userId);
+        
+        $keyboard = [];
+        $keyboard[] = [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']];
+        $keyboard[] = [
+            ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+            ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
+        ];
+
+        if ($isSystemOwner) {
             $keyboard[] = [
-                ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
-                ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
+                ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
+                ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
             ];
+        }
 
-            if ($isSystemOwner) {
-                $keyboard[] = [
-                    ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
-                    ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
-                ];
-            }
+        $welcomeText = "سلام <b>{$fullName}</b> گرامی!\n"
+                     . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
+                     . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و ناول است.\n\n"
+                     . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
-            $welcomeText = "سلام <b>{$fullName}</b> گرامی!\n"
-                         . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
-                         . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و ناول است.\n\n"
-                         . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
+        $adminChatId = $callbackQuery['message']['chat']['id'] ?? $userId;
+        $messageId   = $callbackQuery['message']['message_id'] ?? null;
 
-            $adminChatId  = $callbackQuery['message']['chat']['id'] ?? $userId;
-            $messageId     = $callbackQuery['message']['message_id'] ?? null;
-
-            if ($messageId) {
-                $tg->editMessageText($adminChatId, $messageId, $welcomeText, ['inline_keyboard' => $keyboard]);
-            } else {
-                $tg->sendMessage($userId, $welcomeText, ['inline_keyboard' => $keyboard]);
-            }
-            exit;
+        // ویرایش مستقیم پیام قفل قبلی به منوی اصلی بدون ایجاد پیام اضافه
+        if ($messageId) {
+            $tg->editMessageText($adminChatId, $messageId, $welcomeText, ['inline_keyboard' => $keyboard]);
         } else {
-            $tg->answerCallbackQuery($callbackId, "⚠️ هنوز عضو کانال نشده‌اید! ابتدا جوین شوید.", true);
-            exit;
+            $tg->sendMessage($userId, $welcomeText, ['inline_keyboard' => $keyboard]);
         }
     } else {
-        $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '📢 عضویت در کانال توسعه‌دهندگان (Arvan Dev)', 'url' => 'https://t.me/arvan_dev']],
-                [['text' => '🔄 تایید و بررسی عضویت', 'callback_data' => 'master_check_join']]
-            ]
-        ];
-        
-        $lockText = "👋 سلام <b>{$fullName}</b> گرامی!\n\n"
-                  . "برای استفاده از ربات‌ساز آروان و دسترسی به تمام ابزارهای آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
-                  . "👇 پس از کلیک روی دکمه عضویت زیر، عضو کانال شده و سپس دکمه تایید بررسی عضویت را بفشارید تا ربات برای شما فعال شود:";
-        
-        $tg->sendMessage($userId, $lockText, $keyboard);
-        exit;
+        // کاربر عضو نشده است؛ نمایش اخطار بومی پاپ‌آپ تلگرام به جای شلوغ کردن چت با پیام متنی
+        $tg->apiRequest('answerCallbackQuery', [
+            'callback_query_id' => $callbackId,
+            'text'              => "⚠️ شما هنوز عضو کانال رسمی توسعه‌دهندگان نشده‌اید! لطفاً ابتدا عضو کانال @arvan_dev شوید.",
+            'show_alert'        => true
+        ]);
     }
+    exit;
+}
+
+// ۲. بررسی عمومی عضویت برای سایر دکمه‌ها و پیام‌های متنی ارسالی به ربات مادر
+$isJoined = checkMasterJoin($tg, $userId);
+
+if (!$isJoined) {
+    $keyboard = [
+        'inline_keyboard' => [
+            [['text' => '📢 عضویت در کانال توسعه‌دهندگان (Arvan Dev)', 'url' => 'https://t.me/arvan_dev']],
+            [['text' => '🔄 تایید و بررسی عضویت', 'callback_data' => 'master_check_join']]
+        ]
+    ];
+    
+    $lockText = "👋 سلام <b>{$fullName}</b> گرامی!\n\n"
+              . "برای استفاده از ربات‌ساز آروان و دسترسی به تمام ابزارهای آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
+              . "👇 پس از کلیک روی دکمه عضویت زیر، عضو کانال شده و سپس دکمه تایید بررسی عضویت را بفشارید تا ربات برای شما فعال شود:";
+    
+    $tg->sendMessage($userId, $lockText, $keyboard);
+    exit;
 }
 
 // ---------------------------------------------------------
@@ -225,7 +232,7 @@ if (!function_exists('registerBot')) {
 }
 
 // ==========================================
-// فاز ۲: پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
+// فاز ۳: پردازش دکمه‌های شیشه‌ای ربات‌ساز مادر (Callback Queries)
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
