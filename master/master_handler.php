@@ -39,16 +39,16 @@ $step = $user['step'] ?? 'idle';
 // بررسی دسترسی مالک کل سیستم آروان کریت
 $isSystemOwner = ($userId === OWNER_ID);
 
-// ==========================================
-// فاز ۱: سیستم قفل جوین اجباری کانال مراجع توسعه (@arvan_dev)
-// ==========================================
+// =========================================================
+// فاز ۱: سیستم قفل جوین اجباری شیشه‌ای کانال مراجع توسعه (@arvan_dev)
+// =========================================================
 if (!function_exists('checkMasterJoin')) {
     /**
      * استعلام زنده وضعیت عضویت کاربر در کانال تلگرام توسعه‌دهندگان
      */
     function checkMasterJoin($tg, $userId) {
         if ($userId === OWNER_ID) {
-            return true; // معافیت مالک کل سیستم از قفل کانال
+            return true; // مالک اصلی سیستم معاف از قفل کانال تلگرام است
         }
         
         $response = $tg->apiRequest('getChatMember', [
@@ -72,18 +72,19 @@ if ($callbackQuery && $callbackQuery['data'] === 'master_check_join') {
         $tg->answerCallbackQuery($callbackId, "✅ عضویت شما تایید شد!", false);
         FSM::clearStep(0, $userId);
         
+        // ساختار ترتیبی آرایه دکمه‌ها بدون وجود خطای نوع آرایه در تلگرام
         $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']],
-                [
-                    ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
-                    ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
-                ]
+            [
+                ['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']
+            ],
+            [
+                ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+                ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
             ]
         ];
 
         if ($isSystemOwner) {
-            $keyboard['inline_keyboard'][] = [
+            $keyboard[] = [
                 ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
                 ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
             ];
@@ -94,11 +95,19 @@ if ($callbackQuery && $callbackQuery['data'] === 'master_check_join') {
                      . "با این سیستم می‌توانید ربات‌های پیشرفته مانهوا تیمی و سوپر آپلودرهای همه‌کاره بسازید.\n\n"
                      . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
-        $tg->editMessageText($adminChatId = $callbackQuery['message']['chat']['id'], $callbackQuery['message']['message_id'], $welcomeText, $keyboard);
+        $adminChatId = $callbackQuery['message']['chat']['id'] ?? $userId;
+        $messageId   = $callbackQuery['message']['message_id'] ?? null;
+
+        // ویرایش مستقیم پیام قفل قبلی به منوی اصلی بدون ایجاد پیام اضافه
+        if ($messageId) {
+            $tg->editMessageText($adminChatId, $messageId, $welcomeText, ['inline_keyboard' => $keyboard]);
+        } else {
+            $tg->sendMessage($userId, $welcomeText, ['inline_keyboard' => $keyboard]);
+        }
     } else {
         $tg->apiRequest('answerCallbackQuery', [
             'callback_query_id' => $callbackId,
-            'text'              => "⚠️ شما هنوز عضو کانال @arvan_dev نشده‌اید! ابتدا عضو شده و سپس تایید را بزنید.",
+            'text'              => "⚠️ شما هنوز عضو کانال رسمی توسعه‌دهندگان نشده‌اید! لطفاً ابتدا عضو کانال @arvan_dev شوید.",
             'show_alert'        => true
         ]);
     }
@@ -115,17 +124,17 @@ if (!$isJoinedGlobal) {
         ]
     ];
     
-    $lockText = "👋 سلام <b>{$fullName}</b> گرامی!\n\n"
-              . "برای استفاده از ربات‌ساز آروان کریت و دسترسی به تمام امکانات آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
+    $lockText = "👋 سلام <b>{$fullName}</b> گرامی!\n"
+              . "برای استفاده از ربات‌ساز آروان و دسترسی به تمام ابزارهای آن، لطفاً ابتدا در کانال رسمی مراجع توسعه‌دهندگان (@arvan_dev) عضو شوید.\n\n"
               . "👇 پس از عضویت، روی دکمه بررسی عضویت کلیک کنید تا ربات برای شما فعال شود:";
     
     $tg->sendMessage($userId, $lockText, $keyboard);
     exit;
 }
 
-// ------------------------------------------
+// ---------------------------------------------------------
 // بخش کمکی: ثبت، همگام‌سازی و ست کردن وب‌هوک ربات جدید در دیتابیس
-// ------------------------------------------
+// ---------------------------------------------------------
 if (!function_exists('registerNewBotMaster')) {
     function registerNewBotMaster($db, $tg, $tokenInput, $userId, $username, $fullName, $botType) {
         try {
@@ -230,7 +239,7 @@ if (!function_exists('registerNewBotMaster')) {
 }
 
 // ==========================================
-// فاز ۲: پردازش کالبک‌کوئری‌های ربات‌ساز اصلی (Callbacks)
+// فاز ۴: پردازش کالبک‌کوئری‌های ربات‌ساز اصلی (Callbacks)
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -245,28 +254,29 @@ if ($callbackQuery) {
         FSM::clearStep(0, $userId);
         
         $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']],
-                [
-                    ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
-                    ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
-                ]
+            [
+                ['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']
+            ],
+            [
+                ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+                ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
             ]
         ];
 
+        // نمایش دکمه‌های اختصاصی مالک کل سیستم به صورت منظم
         if ($isSystemOwner) {
-            $keyboard['inline_keyboard'][] = [
+            $keyboard[] = [
                 ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
                 ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
             ];
         }
-
+        
         $welcomeText = "سلام <b>{$fullName}</b> گرامی!\n"
                      . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
-                     . "با این سیستم می‌توانید ربات‌های پیشرفته مانهوا تیمی و سوپر آپلودرهای همه‌کاره بسازید.\n\n"
+                     . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و سوپر آپلودر است.\n\n"
                      . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
-        $tg->editMessageText($adminChatId, $messageId, $welcomeText, $keyboard);
+        $tg->editMessageText($adminChatId, $messageId, $welcomeText, ['inline_keyboard' => $keyboard]);
         exit;
     }
 
@@ -276,44 +286,84 @@ if ($callbackQuery) {
             'inline_keyboard' => [
                 [['text' => '📚 ربات مدیریت تیم مانهوا کاری', 'callback_data' => 'master_select_type_team']],
                 [['text' => '🚀 ربات سوپر آپلودر همه‌کاره ماژولار', 'callback_data' => 'master_select_type_uploader']],
-                [['text' => '🔙 بازگشت به منو اصلی', 'callback_data' => 'master_cancel']]
+                [['text' => '🔙 بازگشت به منو', 'callback_data' => 'master_cancel']]
+            ]
+        ];
+        
+        $textMenu = "➕ <b>انتخاب نوع ربات جهت ساخت:</b>\n\n"
+                  . "لطفاً نوع ربات مورد نظر خود را جهت ساخت انتخاب کنید تا وارد مراحل پیکربندی شویم:";
+                  
+        $tg->editMessageText($adminChatId, $messageId, $textMenu, $keyboard);
+        exit;
+    }
+
+    // کالبک انتخاب نوع ربات مدیریت تیم - نمایش توضیحات و نحوه دریافت توکن
+    elseif ($callbackData === 'master_select_type_team') {
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '📥 شروع ساخت و ارسال توکن', 'callback_data' => 'master_start_team_token']],
+                [['text' => '🔙 بازگشت به لیست', 'callback_data' => 'master_new_bot']]
             ]
         ];
 
-        $text = "➕ <b>انتخاب نوع ربات هدف جهت ساخت:</b>\n\n"
-              . "لطفاً نوع پلتفرم مورد نظر خود را جهت شروع فرآیند ساخت و تنظیم توکن انتخاب کنید:";
+        $infoText = "📚 <b>ربات مدیریت تیم کاری مانهوا:</b>\n\n"
+              . "این ربات مجهز به سیستم استخدام، محاسبه دستمزدها، گزارش ماهانه و پایش مانهواهای راکد است.\n\n"
+              . "💡 <b>راهنمای دریافت توکن:</b>\n"
+              . "۱. ابتدا وارد آیدی @BotFather در تلگرام شوید.\n"
+              . "۲. دستور /newbot را بفرستید و یک نام و یوزرنیم برای ربات خود انتخاب کنید.\n"
+              . "۳. توکن عددی ارسالی را کپی کرده و آماده داشته باشید.\n\n"
+              . "👇 جهت شروع فرآیند ساخت و ارسال توکن، دکمه زیر را لمس کنید:";
 
-        $tg->editMessageText($adminChatId, $messageId, $text, $keyboard);
+        $tg->editMessageText($adminChatId, $messageId, $infoText, $keyboard);
         exit;
     }
 
-    // راهنمای لود توکن ربات مانهوا کاری
-    elseif ($callbackData === 'master_select_type_team') {
+    // کالبک انتخاب نوع ربات سوپر آپلودر
+    elseif ($callbackData === 'master_select_type_uploader') {
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '📥 شروع ساخت و ارسال توکن', 'callback_data' => 'master_start_uploader_token']],
+                [['text' => '🔙 بازگشت به لیست', 'callback_data' => 'master_new_bot']]
+            ]
+        ];
+
+        $infoText = "🚀 <b>ربات سوپر آپلودر همه‌کاره ماژولار:</b>\n\n"
+              . "این ربات مجهز به صفحه جستجوی پیشرفته، لیست‌های هوشمند، سیستم علاقه‌مندی‌ها و پروفایل دانلودر به صورت کاملاً پویا است.\n\n"
+              . "👇 جهت شروع فرآیند ساخت و ارسال توکن، دکمه زیر را لمس کنید:";
+
+        $tg->editMessageText($adminChatId, $messageId, $infoText, $keyboard);
+        exit;
+    }
+
+    // کالبک شروع ارسال توکن - مانهوا کاری
+    elseif ($callbackData === 'master_start_team_token') {
         FSM::setStep(0, $userId, 'waiting_for_token_team');
         
-        $text = "📚 <b>ربات مدیریت تیم مانهوا کاری:</b>\n\n"
-              . "این ربات مجهز به سیستم استخدام، محاسبه دستمزدها، گزارش ماهانه و پایش مانهواهای راکد است.\n\n"
-              . "💡 توکن دریافتی خود از @BotFather را ارسال کنید تا فرآیند ساخت آغاز شود:\n"
-              . "جهت لغو روی دکمه زیر کلیک کنید:";
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'master_cancel']]
+            ]
+        ];
 
-        $tg->editMessageText($adminChatId, $messageId, $text, ['inline_keyboard' => [[['text' => '❌ لغو و انصراف', 'callback_data' => 'master_cancel']]]]);
+        $tg->sendMessage($userId, "📥 <b>بستر دریافت فعال شد.</b>\n\nلطفاً توکن مانهوا کاری خود را از @BotFather ارسال کنید تا فرآیند ساخت آغاز شود:", $keyboard);
         exit;
     }
 
-    // راهنمای لود توکن ربات سوپر آپلودر ماژولار
-    elseif ($callbackData === 'master_select_type_uploader') {
+    // کالبک شروع ارسال توکن - سوپر آپلودر
+    elseif ($callbackData === 'master_start_uploader_token') {
         FSM::setStep(0, $userId, 'waiting_for_token_uploader');
         
-        $text = "🚀 <b>ربات سوپر آپلودر همه‌کاره ماژولار:</b>\n\n"
-              . "این ربات مجهز به صفحه جستجوی پیشرفته، لیست‌های هوشمند، سیستم علاقه‌مندی‌ها و پروفایل دانلودر به صورت کاملاً پویا است.\n\n"
-              . "💡 توکن دریافتی خود از @BotFather را ارسال کنید تا فرآیند ساخت آغاز شود:\n"
-              . "جهت لغو روی دکمه زیر کلیک کنید:";
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'master_cancel']]
+            ]
+        ];
 
-        $tg->editMessageText($adminChatId, $messageId, $text, ['inline_keyboard' => [[['text' => '❌ لغو و انصراف', 'callback_data' => 'master_cancel']]]]);
+        $tg->sendMessage($userId, "📥 <b>بستر دریافت فعال شد.</b>\n\nلطفاً توکن سوپر آپلودر خود را از @BotFather ارسال کنید تا فرآیند ساخت آغاز شود:", $keyboard);
         exit;
     }
 
-    // لیست ربات‌های ساخته شده این کاربر جاری
+    // کالبک لیست ربات‌های کاربر جاری
     elseif ($callbackData === 'master_my_bots') {
         $stmt = $db->prepare("SELECT bot_name, token, bot_type FROM bots WHERE owner_id = :owner_id ORDER BY id DESC");
         $stmt->execute(['owner_id' => $userId]);
@@ -336,10 +386,10 @@ if ($callbackQuery) {
         exit;
     }
 
-    // راهنمای عمومی ربات‌ساز آروان کریت
+    // کالبک راهنمای ساخت ربات
     elseif ($callbackData === 'master_help') {
         $helpText = "❓ <b>راهنمای پلتفرم ربات‌ساز آروان کریت:</b>\n\n"
-                  . "این سیستم به شما اجازه می‌دهد ربات‌های مانهوا کاری یا آپلودرهای همه‌کاره با سرعت بالا بسازید.\n\n"
+                  . "این سیستم به شما اجازه می‌دهد ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید.\n\n"
                   . "۱. وارد آیدی @BotFather در تلگرام شوید.\n"
                   . "۲. دستور /newbot را ارسال کنید و نام و یوزرنیم ربات خود را بسازید.\n"
                   . "۳. توکن عددی ارسالی را کپی کرده و در بخش ساخت ربات جدید در پلتفرم ما آپلود کنید.\n"
@@ -359,10 +409,10 @@ if ($callbackQuery) {
         $buttons = [];
         foreach ($allBots as $bot) {
             $typeLabel = $bot['bot_type'] === 'uploader' ? "آپلودر" : "مانهوا";
-            $textBots .= "🤖 <b>{$bot['bot_name']}</b> | نوع: {$typeLabel}\n└ آیدی ادمین کل: <code>{$bot['owner_id']}</code>\n\n";
+            $textBots .= "🤖 <b>{$bot['bot_name']}</b> | نوع: {$typeLabel}\n└ مالک: <code>{$bot['owner_id']}</code>\n\n";
             $buttons[] = [['text' => "🚀 ورود به {$bot['bot_name']}", 'url' => "https://t.me/" . str_replace('@', '', $bot['bot_name'])]];
         }
-        $buttons[] = [['text' => '🔙 بازگشت', 'callback_data' => 'master_cancel']];
+        $buttons[] = [['text' => '🔙 بازگشت به منوی ادمین', 'callback_data' => 'master_cancel']];
 
         $tg->sendMessage($userId, $textBots, ['inline_keyboard' => $buttons]);
         exit;
@@ -419,7 +469,7 @@ if ($callbackQuery) {
 
             $totalPaidSum = (float)$cStats['pay_translators'] + (float)$cStats['pay_cleaners'] + (float)$cStats['pay_typesetters'];
 
-            $statsText = "📊 <b>گزارش آماری کل سرور آروان کریت (مخصوص مالک کل):</b>\n\n"
+            $statsText = "📊 <b>گزارش آماری ۲۲ شاخص متمایز کل سرور (مخصوص مالک کل):</b>\n\n"
                        . "🤖 <b>بخش ربات‌ها:</b>\n"
                        . "└ کل ربات‌های ثبت شده روی دیتابیس نئون: <code>{$miscStats['total_bots']}</code> ربات\n\n"
                        . "👥 <b>بخش کاربران و اعضای رسمی ربات‌ها:</b>\n"
@@ -436,18 +486,21 @@ if ($callbackQuery) {
                        . "├ کل چپترهای تایید و ثبت شده: <code>{$cStats['approved_chapters']}</code> چپتر\n"
                        . "└ چپترهای در انتظار تایید مدیریت: <code>{$cStats['pending_chapters']}</code> چپتر\n\n"
                        . "💸 <b>بخش محاسبات مالی و حقوق‌ها:</b>\n"
-                       . "├ کل حقوق توزیع شده پرسنل: <code>" . number_format($totalPaidSum) . "</code> تومان\n"
-                       . "├ مجموع کیف پول فعلی اعضا: <code>" . number_format($uStats['total_earned_sum']) . "</code> تومان\n"
-                       . "├ سهم پرداختی به مترجمین: <code>" . number_format($cStats['pay_translators']) . "</code> تومان\n"
-                       . "├ سهم پرداختی به کلینرها: <code>" . number_format($cStats['pay_cleaners']) . "</code> تومان\n"
-                       . "└ سهم پرداختی به تایپیست‌ها: <code>" . number_format($cStats['pay_typesetters']) . "</code> تومان\n\n"
+                       . "├ ۱۳. کل حقوق توزیع شده پرسنل: <code>" . number_format($totalPaidSum) . "</code> تومان\n"
+                       . "├ ۱۴. مجموع کیف پول فعلی اعضا: <code>" . number_format($uStats['total_earned_sum']) . "</code> تومان\n"
+                       . "├ ۱۵. سهم پرداختی به مترجمین: <code>" . number_format($cStats['pay_translators']) . "</code> تومان\n"
+                       . "├ ۱۶. سهم پرداختی به کلینرها: <code>" . number_format($cStats['pay_cleaners']) . "</code> تومان\n"
+                       . "└ ۱۷. سهم پرداختی به تایپیست‌ها: <code>" . number_format($cStats['pay_typesetters']) . "</code> تومان\n\n"
                        . "📂 <b>بخش سنجش، آزمون‌ها و تیکت‌ها:</b>\n"
-                       . "├ کل تیکت‌های پشتیبانی باز شده: <code>{$miscStats['total_tickets']}</code> تیکت\n"
-                       . "├ تیکت‌های باز در انتظار پاسخ: <code>{$miscStats['open_tickets']}</code> تیکت\n"
-                       . "└ کل آزمون‌های تمرینی ثبت شده: <code>{$miscStats['total_exams']}</code> آزمون\n\n"
-                       . "🕒 <i>گزارش به صورت زنده بر اساس آخرین اتصالات نئون تولید شده است.</i>";
+                       . "├ ۱۸. مجموع تست‌های استخدامی ثبت شده: <code>{$tStats['total_tests']}</code> تست\n"
+                       . "├ ۱۹. تست‌های استخدامی پذیرفته‌شده: <code>{$tStats['accepted_tests']}</code> مورد\n"
+                       . "├ ۲۰. تست‌های استخدامی رد شده: <code>{$tStats['rejected_tests']}</code> مورد\n"
+                       . "├ ۲۱. کل تیکت‌های پشتیبانی باز شده: <code>{$miscStats['total_tickets']}</code> تیکت\n"
+                       . "├ ۲۲. تیکت‌های باز در انتظار پاسخ: <code>{$miscStats['open_tickets']}</code> تیکت\n"
+                       . "└ ۲۳. کل آزمون‌های تمرینی ثبت شده: <code>{$miscStats['total_exams']}</code> آزمون\n\n"
+                       . "🕒 <i>این گزارش بر اساس آخرین تراکنش‌های دیتابیس نئون به صورت زنده تولید شده است.</i>";
 
-            $tg->sendMessage($userId, $statsText, ['inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'master_cancel']]]]);
+            $tg->sendMessage($userId, $statsText, ['inline_keyboard' => [[['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'master_cancel']]]]);
         } catch (Exception $e) {
             $tg->sendMessage($userId, "❌ خطا در محاسبات زنده آماری سرور.");
         }
@@ -456,31 +509,31 @@ if ($callbackQuery) {
 }
 
 // ==========================================
-// فاز ۳: پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
+// فاز ۵: پردازش پیام‌های متنی ارسالی به ربات‌ساز مادر (Text Commands)
 // ==========================================
 if (!empty($text)) {
-    
     // دستور استارت ربات‌ساز اصلی
     if ($text === '/start') {
         FSM::clearStep(0, $userId);
 
         $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']],
-                [
-                    ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
-                    ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
-                ]
+            [
+                ['text' => '➕ ساخت ربات جدید', 'callback_data' => 'master_new_bot']
+            ],
+            [
+                ['text' => '📋 لیست ربات‌های من', 'callback_data' => 'master_my_bots'],
+                ['text' => '❓ راهنما و قوانین', 'callback_data' => 'master_help']
             ]
         ];
 
         $welcome = "سلام <b>{$fullName}</b> گرامی!\n"
                  . "به پلتفرم ربات‌ساز بزرگ <b>آروان کریت (Arvan Create)</b> خوش آمدید.\n\n"
-                 . "با این سیستم می‌توانید ربات‌های پیشرفته مانهوا تیمی و سوپر آپلودرهای همه‌کاره بسازید.\n\n"
+                 . "با این سیستم می‌توانید ربات‌های تلگرامی پیشرفته با کاربردهای مختلف بسازید. در حال حاضر سیستم مجهز به قالب مدیریت تیم کاری، استخدام پرسنل و آپلود مانهوا و سوپر آپلودر است.\n\n"
                  . "👇 برای شروع کار یکی از گزینه‌های زیر را انتخاب کنید:";
 
+        // نمایش گزینه‌های مانیتورینگ پیشرفته برای مالک کل سیستم به صورت کاملاً ترتیبی و پویا
         if ($isSystemOwner) {
-            $keyboard['inline_keyboard'][] = [
+            $keyboard[] = [
                 ['text' => '📊 آمار کل سیستم', 'callback_data' => 'master_owner_stats'],
                 ['text' => '🌐 لیست کل ربات‌ها', 'callback_data' => 'master_owner_all_bots']
             ];
