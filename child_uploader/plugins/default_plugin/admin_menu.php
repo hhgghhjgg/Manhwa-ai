@@ -2,7 +2,7 @@
 /**
  * Project: Arvan Create Bot Maker Platform (Super Uploader Engine)
  * File: child_uploader/plugins/default_plugin/admin_menu.php
- * Role: Main Admin Dispatcher, Onboarding Seeder & Root Default Panel Handler
+ * Role: Main Admin Dispatcher, Onboarding Seeder & Root Default Panel Handler (Fully Fixed)
  */
 
 // جلوگیری از لود مستقل بدون کانتکست و متغیرهای تعریف شده در هسته ربات
@@ -11,6 +11,7 @@ if (!isset($db, $tg, $botId, $userId)) {
 }
 
 $callbackData = $callbackData ?? ($callbackQuery['data'] ?? '');
+$callbackId   = $callbackId ?? ($callbackQuery['id'] ?? null); // مهار لودینگ ساعت تلگرام جهت تایید رویدادها [1]
 $messageId    = $messageId ?? ($callbackQuery['message']['message_id'] ?? null);
 $chatId       = $chatId ?? ($callbackQuery['message']['chat']['id'] ?? $userId);
 
@@ -117,8 +118,10 @@ if (strpos($callbackData, 'def_settype_') === 0) {
     // ۲. اجرای سیدر پویا متناسب با نوع انتخابی جهت پر کردن اتوماتیک دیتابیس [1]
     seedBotPresets($db, $botId, $selectedType);
 
-    // ۳. ارسال پاپ‌آپ تایید موقت تلگرام
-    $tg->answerCallbackQuery($callbackId, "✅ ربات شما با موفقیت پیکربندی شد!");
+    // ۳. ارسال پاپ‌آپ تایید موقت تلگرام با شناسه کالبک معتبر (تضمین پاسخ آنی و خاموش شدن لودینگ دکمه)
+    if ($callbackId) {
+        $tg->answerCallbackQuery($callbackId, "✅ ربات شما با موفقیت پیکربندی شد!");
+    }
 
     // ۴. رفرش و هدایت خودکار به منوی اصلی ادمین دیفالت
     $callbackQuery['data'] = 'admin_managements';
@@ -161,8 +164,8 @@ $contentType = $stmtType->fetchColumn();
 
 // الف) سناریوی لود سوال بنیادین (اگر ادمین برای نخستین بار کلیک کرده است)
 if (!$contentType || $contentType === 'team') {
-    $text = "❓ <b>ربات شما چیست؟</b>\n\n"
-          . "حوزه فعالیت اصلی خود را مشخص کنید تا ربات اطلاعات اولیه، کتگوری‌ها و لیست‌ها را به صورت خودکار بسازد [1]:";
+    $text = "❓ <b>سوال بنیادین: ربات شما چیست؟</b>\n\n"
+          . "لطفاً حوزه فعالیت اصلی ربات خود را از منوی زیر انتخاب کنید. این تنظیم نحوه رندر دکمه‌های دانلودر و فیلدهای ورودی را مشخص می‌کند [1]:";
 
     $keyboard = [
         'inline_keyboard' => [
@@ -197,7 +200,11 @@ if (!$contentType || $contentType === 'team') {
         ]
     ];
 
-    $tg->editMessageText($chatId, $messageId, $text, $keyboard);
+    if (isset($messageId)) {
+        $tg->editMessageText($chatId, $messageId, $text, $keyboard);
+    } else {
+        $tg->sendMessage($userId, $text, $keyboard);
+    }
     exit;
 }
 
@@ -235,5 +242,9 @@ $keyboardMenu = [
     ]
 ];
 
-$tg->editMessageText($chatId, $messageId, $textMenu, $keyboardMenu);
+if (isset($messageId)) {
+    $tg->editMessageText($chatId, $messageId, $textMenu, $keyboardMenu);
+} else {
+    $tg->sendMessage($userId, $textMenu, $keyboardMenu);
+}
 exit;
