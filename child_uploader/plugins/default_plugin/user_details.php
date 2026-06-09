@@ -11,6 +11,7 @@ if (!isset($db, $tg, $botId, $userId)) {
 }
 
 $callbackData = $callbackData ?? ($callbackQuery['data'] ?? '');
+$callbackId   = $callbackId ?? ($callbackQuery['id'] ?? null); // مهار لودینگ ساعت تلگرام جهت تایید رویدادها [1]
 $messageId    = $messageId ?? ($callbackQuery['message']['message_id'] ?? null);
 $chatId       = $chatId ?? ($callbackQuery['message']['chat']['id'] ?? $userId);
 
@@ -35,9 +36,9 @@ try {
     error_log("Failed to create user details helper tables: " . $e->getMessage());
 }
 
-// ------------------------------------------
+// ==========================================
 // بخش اول: پردازش اکشن‌های تعاملی (Likes & Bookmarks Actions)
-// ------------------------------------------
+// ==========================================
 
 // الف) کالبک ثبت لایک (Like Action)
 if (strpos($callbackData, 'def_like_') === 0) {
@@ -54,13 +55,18 @@ if (strpos($callbackData, 'def_like_') === 0) {
         ");
         $stmt->execute(['bot_id' => $botId, 'u_id' => $userId, 'm_id' => $mediaId]);
         $db->commit();
-        $tg->answerCallbackQuery($callbackId, "📥 رأی شما با موفقیت ثبت شد.");
+        
+        if ($callbackId) {
+            $tg->answerCallbackQuery($callbackId, "📥 رأی شما با موفقیت ثبت شد.");
+        }
     } catch (Exception $e) {
         $db->rollBack();
-        $tg->answerCallbackQuery($callbackId, "❌ خطا در ثبت رأی.");
+        if ($callbackId) {
+            $tg->answerCallbackQuery($callbackId, "❌ خطا در ثبت رأی.");
+        }
     }
 
-    // رفرش صفحه جزئیات برای نمایش آمارهای جدید
+    // رفرش شناسنامه برای نمایش آمارهای جدید
     renderSingleMediaDetails($db, $tg, $botId, $userId, $mediaId, $chatId, $messageId);
     exit;
 }
@@ -80,10 +86,15 @@ elseif (strpos($callbackData, 'def_dislike_') === 0) {
         ");
         $stmt->execute(['bot_id' => $botId, 'u_id' => $userId, 'm_id' => $mediaId]);
         $db->commit();
-        $tg->answerCallbackQuery($callbackId, "📥 رأی شما با موفقیت ثبت شد.");
+        
+        if ($callbackId) {
+            $tg->answerCallbackQuery($callbackId, "📥 رأی شما با موفقیت ثبت شد.");
+        }
     } catch (Exception $e) {
         $db->rollBack();
-        $tg->answerCallbackQuery($callbackId, "❌ خطا در ثبت رأی.");
+        if ($callbackId) {
+            $tg->answerCallbackQuery($callbackId, "❌ خطا در ثبت رأی.");
+        }
     }
 
     renderSingleMediaDetails($db, $tg, $botId, $userId, $mediaId, $chatId, $messageId);
