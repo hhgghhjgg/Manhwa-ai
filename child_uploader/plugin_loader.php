@@ -2,10 +2,10 @@
 /**
  * Project: Arvan Create Bot Maker Platform (Super Uploader Engine)
  * File: child_uploader/plugin_loader.php
- * Role: Secure Dynamic Plugin Loader & Variable Scope Injector
+ * Role: Secure Dynamic Plugin Loader & Variable Scope Injector (Fixed CallbackId Scope Injection)
  */
 
-// جلوگیری از دسترسی مستقیم به این فایل بدون بارگذاری هسته اصلی ربات
+// جلوگیری از لود مستقل بدون کانتکست و متغیرهای تعریف شده در هسته ربات
 if (!defined('MASTER_BOT_TOKEN')) {
     exit;
 }
@@ -100,7 +100,7 @@ class PluginLoader {
                 
                 $handlerPath = __DIR__ . "/plugins/{$pluginSlug}/handler.php";
                 
-                // ۳. لود کردن کدهای افزونه با تزریق متغیرهای حیاتی وب‌هوک
+                // ۳. لود کردن کدهای افزونه با تزریق متغیرهای حیاتی وب‌هوک (متغیر callbackId نیز اضافه شد) [1]
                 $variables = [
                     'db'            => $db,
                     'tg'            => $tg,
@@ -110,6 +110,7 @@ class PluginLoader {
                     'botContext'    => $botContext,
                     'callbackQuery' => $callbackQuery,
                     'callbackData'  => $callbackData,
+                    'callbackId'    => $callbackQuery['id'] ?? null, // تزریق سراسری آیدی کالبک به اسکوپ تمام افزونه‌ها
                     'messageId'     => $callbackQuery['message']['message_id'] ?? null,
                     'chatId'        => $callbackQuery['message']['chat']['id'] ?? $userId
                 ];
