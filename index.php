@@ -1,8 +1,8 @@
 <?php
 /**
- * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
+ * Project: Arvan Create Bot Maker Platform (Multi-Tenant Engine)
  * File: index.php
- * Role: Main Webhook Gateway & Request Router
+ * Role: Main Webhook Gateway & Dynamic Multi-Tenant Request Router
  */
 
 // ۱. تنظیمات مربوط به ثبت خطاهای احتمالی در بخش Logs پنل رندر
@@ -10,20 +10,20 @@ ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
-// ۲. لود کردن ماژول‌ها و فایل‌های زیربنایی هسته
+// ۲. لود کردن ماژول‌ها و فایل‌های زیربنایی هسته پروژه
 require_once __DIR__ . '/core/config.php';
 require_once __DIR__ . '/core/db.php';
 require_once __DIR__ . '/core/telegram.php';
 require_once __DIR__ . '/core/fsm.php';
 
-// ۳. پاسخ مناسب به بازدید‌های معمولی مرورگر (متد GET) جهت اطمینان از سلامت سرور
+// ۳. پاسخ مناسب به بازدید‌های معمولی مرورگر (متد GET) جهت اطمینان از سلامت سرور رندر
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header('Content-Type: text/html; charset=utf-8');
     http_response_code(200);
     echo "<div style='text-align: center; margin-top: 10%; font-family: Tahoma, sans-serif;'>";
-    echo "<h2>🚀 موتور ربات‌ساز مانهوا فعال است</h2>";
+    echo "<h2>🚀 موتور ربات‌ساز مانهوا و سوپر آپلودر فعال است</h2>";
     echo "<p>بستر سرورلس رندر آماده دریافت اطلاعات و رویدادهای تلگرام می‌باشد.</p>";
-    echo "<span style='color: green;'>● وضعیت دیتابیس و ارتباط بهینه است.</span>";
+    echo "<span style='color: green;'>● وضعیت اتصال به دیتابیس نئون و وب‌هوک بهینه است.</span>";
     echo "</div>";
     exit;
 }
@@ -42,7 +42,6 @@ if (!$update) {
 $botToken = $_GET['bot_token'] ?? null;
 
 // بررسی اینکه آیا درخواست مربوط به رباتِ مادر (ربات‌ساز اصلی) است یا خیر
-// مسیر وب‌هوک ربات مادر می‌تواند به شکل index.php?master=1 یا حاوی توکن اصلی ربات مادر باشد
 $isMaster = isset($_GET['master']) || ($botToken === MASTER_BOT_TOKEN);
 
 try {
@@ -70,8 +69,8 @@ try {
             exit;
         }
         
-        // استعلام اطلاعات مالکیتی، شناسه داخلی و وضعیت سندباکس ربات فرزند از جدول ربات‌ها
-        $stmt = $db->prepare("SELECT id, owner_id, bot_name, is_sandbox FROM bots WHERE token = :token LIMIT 1");
+        // استعلام اطلاعات مانهوا، نوع ربات (bot_type)، مالک و وضعیت سندباکس از دیتابیس
+        $stmt = $db->prepare("SELECT id, owner_id, bot_name, is_sandbox, bot_type FROM bots WHERE token = :token LIMIT 1");
         $stmt->execute(['token' => $botToken]);
         $botData = $stmt->fetch();
         
@@ -81,22 +80,28 @@ try {
             exit;
         }
         
-        // ایجاد بسته زمینه (Context) برای ربات فرزندِ مانهوا
+        // ایجاد بسته زمینه (Context) برای ربات فرزندِ مانهوا یا سوپر آپلودر
         $botContext = [
             'is_master'  => false,
             'bot_id'     => (int)$botData['id'],
             'bot_token'  => $botToken,
             'owner_id'   => (int)$botData['owner_id'],
             'bot_name'   => $botData['bot_name'] ?? 'ربات مانهوا',
+            'bot_type'   => $botData['bot_type'] ?? 'team', // دریافت نوع ربات فرزند
             'is_sandbox' => (bool)($botData['is_sandbox'] ?? false), // دریافت وضعیت سندباکس
             'update'     => $update
         ];
         
-        // هدایت درخواست به پردازشگر مرکزی مانهوا (عادی یا سندباکس)
+        // هدایت درخواست به پردازشگر مرکزی متناظر (سندباکس، مدیریت تیم یا سوپر آپلودر ماژولار)
         if ($botContext['is_sandbox']) {
             require_once __DIR__ . '/child_sandbox/router.php';
         } else {
-            require_once __DIR__ . '/child/router.php';
+            // روتینگ داینامیک بر اساس ستون نوع ربات در دیتابیس نئون
+            if ($botContext['bot_type'] === 'uploader') {
+                require_once __DIR__ . '/child_uploader/router.php';
+            } else {
+                require_once __DIR__ . '/child/router.php';
+            }
         }
     }
     
