@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/group_panel.php
- * Role: Group Command Processor with Dual Mode & Collision-Free Team Assignments (ON CONFLICT Resolution)
+ * Role: Group Command Processor with Dual Mode, Silence, Warn, & Collision-Free Team Assignments
  */
 
 // اطمینان از صحت متغیرها و کانتکست لود شده
@@ -44,10 +44,10 @@ if (!function_exists('findUserByUsernameOrId')) {
 }
 
 // ==========================================
-// فاز ۱: پردازش ورودی‌های متنی FSM در گروه (ثبت مانهوا، انتساب شیشه‌ای و قوانین)
+// فاز ۱: پردازش ورودی‌های متنی FSM در گروه
 // ==========================================
 
-// الف) فرآیند سنتی متصل کردن گروه به پروژه مانهوا
+// الف) فرآیند متصل کردن گروه به پروژه مانهوا
 if ($userStep === 'waiting_group_manhwa_info' && $isAdminInGroup) {
     if (isset($message['photo']) && !empty($caption)) {
         $coverFileId = end($message['photo'])['file_id'];
@@ -61,7 +61,7 @@ if ($userStep === 'waiting_group_manhwa_info' && $isAdminInGroup) {
         $genres  = isset($matchGenres[1]) ? trim($matchGenres[1]) : '';
 
         if (empty($title) || empty($summary) || empty($genres)) {
-            $tg->sendMessage($chatId, "❌ <b>خطا در ثبت مانهوا!</b>\n\nمشخصات در کپشن تصویر با الگوی ارسالی انطباق ندارد. لطفاً عکس کاور را مجدداً ارسال کرده و کپشن را دقیقاً بر اساس فرمت زیر پر کنید:\n\n<code>اسم: نام مانهوا\nخلاصه: خلاصه داستان را اینجا بنویسید\nژانر: ژانرهای مانهوا</code>");
+            $tg->sendMessage($chatId, "❌ <b>خطا در ثبت مانهوا!</b>\n\nلطفاً عکس کاور را مجدداً ارسال کرده و کپشن را دقیقاً بر اساس فرمت زیر پر کنید:\n\n<code>اسم: نام مانهوا\nخلاصه: خلاصه داستان را اینجا بنویسید\nژانر: ژانرهای مانهوا</code>");
             exit;
         }
 
@@ -94,7 +94,7 @@ if ($userStep === 'waiting_group_manhwa_info' && $isAdminInGroup) {
     }
 }
 
-// ب) فرآیند جستجو و ثبت شیشه‌ای اعضای تیم با پشتیبانی از سرچ دقیق
+// ب) فرآیند جستجو و ثبت شیشه‌ای اعضای تیم
 elseif (strpos($userStep, 'group_waiting_search_') === 0 && $isAdminInGroup) {
     $roleToAssign = str_replace('group_waiting_search_', '', $userStep);
     FSM::clearStep($botId, $userId);
@@ -123,7 +123,7 @@ elseif (strpos($userStep, 'group_waiting_search_') === 0 && $isAdminInGroup) {
     $foundUsers = $stmtU->fetchAll();
 
     if (empty($foundUsers)) {
-        $tg->sendMessage($chatId, "❌ کاربری با مشخصات وارد شده پیدا نشد. داوطلب ابتدا باید ربات را استارت کرده باشد.");
+        $tg->sendMessage($chatId, "❌ کاربری پیدا نشد. داوطلب ابتدا باید ربات را استارت کرده باشد.");
         exit;
     }
 
@@ -145,7 +145,7 @@ elseif (strpos($userStep, 'group_waiting_search_') === 0 && $isAdminInGroup) {
     exit;
 }
 
-// ج) فرآیند دریافت متنی تنظیم نرخ اختصاصی از داخل گروه
+// ج) فرآیند دریافت متنی تنظیم نرخ اختصاصی
 elseif (strpos($userStep, 'group_waiting_rate_') === 0 && $isAdminInGroup) {
     $roleToUpdate = str_replace('group_waiting_rate_', '', $userStep);
     FSM::clearStep($botId, $userId);
@@ -230,7 +230,7 @@ if ($callbackQuery && $callbackData) {
         FSM::setStep($botId, $userId, "group_waiting_search_{$roleToSet}");
         $roleFarsi = ($roleToSet === 'translator') ? 'مترجم' : (($roleToSet === 'cleaner') ? 'کلینر' : 'تایپیست');
 
-        $tg->sendMessage($chatId, "🔍 <b>بخش انتساب شیشه‌ای:</b>\n\nلطفاً نام، یوزرنیم (همراه با @ یا بدون آن) یا آیدی عددی شخص مورد نظر جهت انتساب به عنوان <b>«{$roleFarsi}»</b> را بنویسید و بفرستید:", [
+        $tg->sendMessage($chatId, "🔍 <b>بخش انتساب شیشه‌ای:</b>\n\nلطفاً نام، یوزرنیم یا آیدی عددی شخص مورد نظر جهت انتساب به عنوان <b>«{$roleFarsi}»</b> را بفرستید:", [
             'reply_to_message_id' => $messageId
         ]);
         exit;
@@ -260,7 +260,7 @@ if ($callbackQuery && $callbackData) {
             ]
         ];
 
-        $tg->editMessageText($chatId, $messageId, "⚠️ <b>آیا مطمئن هستید؟</b>\n\nمی‌خواهید کاربر <b>{$targetName}</b> را به عنوان <b>«{$roleFarsi}»</b> پروژه ثبت کنید؟", $keyboard);
+        $tg->editMessageText($chatId, $messageId, "⚠️ <b>تایید نهایی:</b>\n\nمی‌خواهید کاربر <b>{$targetName}</b> را به عنوان <b>«{$roleFarsi}»</b> پروژه ثبت کنید؟", $keyboard);
         exit;
     }
 
@@ -278,7 +278,6 @@ if ($callbackQuery && $callbackData) {
         $manhwa = $stmtM->fetch();
 
         if ($manhwa) {
-            // حل نهایی باگ همپوشانی نقش (به روز رسانی خودکار عضو در صورت وجود تخصیص قبلی بدون بروز ارور ۵۰۰)
             $stmtInsert = $db->prepare("
                 INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
                 VALUES (:bot_id, :manhwa_id, :role, :user_id)
@@ -297,7 +296,7 @@ if ($callbackQuery && $callbackData) {
             $targetName = $stmtU->fetch()['full_name'] ?? 'کاربر';
 
             $roleFarsi = ($roleToSet === 'translator') ? 'مترجم' : (($roleToSet === 'cleaner') ? 'کلینر' : 'تایپیست');
-            $tg->editMessageText($chatId, $messageId, "✅ کاربر <b>{$targetName}</b> با موفقیت به عنوان <b>«{$roleFarsi}»</b> پروژه مانهوای <b>«{$manhwa['title']}»</b> منتسب شد.");
+            $tg->editMessageText($chatId, $messageId, "✅ کاربر <b>{$targetName}</b> با موفقیت به عنوان <b>«{$roleFarsi}»</b> مانهوای <b>«{$manhwa['title']}»</b> منتسب شد.");
         }
         exit;
     }
@@ -309,7 +308,7 @@ if ($callbackQuery && $callbackData) {
         $roleToUpdate = str_replace('grp_rate_init_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "group_waiting_rate_{$roleToUpdate}");
-        $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینer' : 'تایپیست');
+        $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینر' : 'تایپیست');
 
         $tg->sendMessage($chatId, "💸 لطفاً مبلغ دستمزد اختصاصی جدید نقش <b>«{$roleFarsi}»</b> را به عدد (به تومان) وارد کنید:", [
             'reply_to_message_id' => $messageId
@@ -409,7 +408,7 @@ if ($callbackQuery && $callbackData) {
                 [['text' => '🔙 بازگشت به لیست قوانین', 'callback_data' => 'grp_rules_list_1']]
             ]
         ];
-        $tg->editMessageText($chatId, $messageId, "✅ قانون مورد نظر با موفقیت حذف شد.", $keyboard);
+        $tg->editMessageText($chatId, $messageId, "✅ قانون با موفقیت حذف شد.", $keyboard);
         exit;
     }
 
@@ -455,7 +454,7 @@ if ($callbackQuery && $callbackData) {
         }
         $buttons[] = [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']];
 
-        $tg->editMessageText($chatId, $messageId, "📖 <b>لیست قوانین و استانداردهای این گروه (صفحه {$page} از {$totalPages}):</b>", ['inline_keyboard' => $buttons]);
+        $tg->editMessageText($chatId, $messageId, "📖 <b>لیست قوانین و استانداردهای این گروه:</b>", ['inline_keyboard' => $buttons]);
         exit;
     }
 
@@ -478,21 +477,36 @@ if ($callbackQuery && $callbackData) {
         }
         exit;
     }
+
+    // تایید و پردازش بن تیمی از داخل گروه
+    elseif (strpos($callbackData, 'grp_teamban_confirm_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        if (!$isAdminInGroup) exit;
+        $targetUserId = str_replace('grp_teamban_confirm_', '', $callbackData);
+
+        FSM::setStatus($botId, $targetUserId, 'banned');
+        FSM::setRole($botId, $targetUserId, 'none');
+
+        // اخراج از گروه فعلی
+        $tg->apiRequest('banChatMember', ['chat_id' => $chatId, 'user_id' => $targetUserId]);
+
+        $tg->editMessageText($chatId, $messageId, "✅ کاربر مورد نظر به دلیل بن تیمی از ربات معلق و از گروه کاری به طور کامل اخراج شد.");
+        exit;
+    }
 }
 
 // ==========================================
-// فاز ۳: پردازش دستورات متنی اسلشی و فارسی نوین گروهی
+// فاز ۳: پردازش دستورات متنی اسلشی و فارسی
 // ==========================================
 if (!empty($text)) {
 
-    // ۱. دستور افزودن تیم (با دو مدل پردازش متنی و شیشه‌ای)
+    // ۱. دستور افزودن تیم (مدل سنتی و شیشه‌ای)
     if ($text === 'افزودن تیم' || strpos($text, '/add_team') === 0) {
         if (!$isAdminInGroup) {
             $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
             exit;
         }
 
-        // مدل اول: دستور اسلشی سنتی (جایگزینی هوشمند با ON CONFLICT جهت جلوگیری از کرش دیتابیس)
         if (strpos($text, '/add_team') === 0) {
             $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
             $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
@@ -512,7 +526,7 @@ if (!empty($text)) {
             $transInput = $matchTrans[1] ?? null;
 
             if (!$typeInput || !$cleanInput || !$transInput) {
-                $tg->sendMessage($chatId, "❌ <b>الگوی ارسال دستور اشتباه است!</b>\n\nلطفاً دستور را دقیقاً با فرمت زیر پر کرده و بفرستید:\n\n<code>/add_team\nتایپ[@username]->\nکلین[@username]->\nترجمه[@username]-></code>");
+                $tg->sendMessage($chatId, "❌ <b>الگوی ارسال دستور اشتباه است!</b>\n\nفرمت صحیح:\n\n<code>/add_team\nتایپ[@username]->\nکلین[@username]->\nترجمه[@username]-></code>");
                 exit;
             }
 
@@ -521,7 +535,7 @@ if (!empty($text)) {
             $translatorId = findUserByUsernameOrId($db, $botId, $transInput);
 
             if (!$typesetterId || !$cleanerId || !$translatorId) {
-                $errText = "❌ <b>ثبت تیم با شکست مواجه شد!</b>\n\nبرخی از یوزرنیم‌های ارسال شده هنوز وارد ربات نشده و دکمه استارت را نزده‌اند یا تایید رسمی نشده‌اند:\n";
+                $errText = "❌ <b>ثبت تیم با شکست مواجه شد!</b>\n\nبرخی کاربران یافت نشدند:\n";
                 $errText .= "├ تایپیست: " . ($typesetterId ? "✅ یافت شد" : "❌ یافت نشد") . "\n";
                 $errText .= "├ کلینر: " . ($cleanerId ? "✅ یافت شد" : "❌ یافت نشد") . "\n";
                 $errText .= "└ مترجم: " . ($translatorId ? "✅ یافت شد" : "❌ یافت نشد");
@@ -531,7 +545,6 @@ if (!empty($text)) {
 
             $db->beginTransaction();
             try {
-                // پی‌ریزی مجدد دستورات درج با قید یکتا جهت جلوگیری از بروز باگ کلید تکراری
                 $stmtIns = $db->prepare("
                     INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
                     VALUES (:bot_id, :manhwa_id, :role, :user_id)
@@ -543,16 +556,13 @@ if (!empty($text)) {
                 $stmtIns->execute(['bot_id' => $botId, 'manhwa_id' => $manhwa['id'], 'role' => 'translator', 'user_id' => $translatorId]);
                 $db->commit();
 
-                $tg->sendMessage($chatId, "✅ <b>اعضای جدید با موفقیت به تیم پروژه «{$manhwa['title']}» ملحق شدند!</b>\n\n📝 مترجم: <code>{$transInput}</code>\n🖌 کلینر: <code>{$cleanInput}</code>\n⌨️ تایپیست: <code>{$typeInput}</code>");
+                $tg->sendMessage($chatId, "✅ <b>اعضا با موفقیت به پروژه «{$manhwa['title']}» ملحق شدند!</b>");
             } catch (Exception $e) {
                 $db->rollBack();
-                $tg->sendMessage($chatId, "❌ خطا در همگام‌سازی دیتابیس تیم مانهوا.");
+                $tg->sendMessage($chatId, "❌ خطا در همگام‌سازی دیتابیس تیم.");
             }
             exit;
-        }
-
-        // مدل دوم: پیام متنی فارسی نوین (ارائه پنل شیشه‌ای افزودن تک‌تک اعضا)
-        else {
+        } else {
             $keyboard = [
                 'inline_keyboard' => [
                     [
@@ -565,7 +575,7 @@ if (!empty($text)) {
                     [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']]
                 ]
             ];
-            $tg->sendMessage($chatId, "👥 <b>منوی شیشه‌ای مدیریت تیم کاری:</b>\n\nقصد انتساب کدام تخصص را به این پروژه مانهوا دارید؟", $keyboard);
+            $tg->sendMessage($chatId, "👥 <b>منوی مدیریت تیم کاری:</b>\n\nقصد انتساب کدام تخصص را دارید؟", $keyboard);
             exit;
         }
     }
@@ -577,11 +587,10 @@ if (!empty($text)) {
             exit;
         }
 
-        // مدل اول: دستور اسلشی سنتی مستقیم
         if (strpos($text, '/set_rates') === 0) {
             preg_match('/\/set_rates\s+(\d+)\s+(\d+)\s+(\d+)/', $text, $matchRates);
             if (!$matchRates) {
-                $tg->sendMessage($chatId, "❌ <b>فرمت دستور اشتباه است!</b>\n\nقالب استفاده:\n<code>/set_rates [مترجم] [کلینر] [تایپیست]</code>\n\nمثال: <code>/set_rates 12000 8000 9000</code>");
+                $tg->sendMessage($chatId, "❌ <b>فرمت دستور اشتباه است!</b>\n\nقالب استفاده:\n<code>/set_rates [مترجم] [کلینر] [تایپیست]</code>");
                 exit;
             }
 
@@ -594,12 +603,9 @@ if (!empty($text)) {
                 'g_id' => $chatId
             ]);
 
-            $tg->sendMessage($chatId, "✅ <b>نرخ‌های اختصاصی مانهوای این گروه با موفقیت تنظیم شد:</b>\n\n📝 مترجم: " . number_format($matchRates[1]) . " ت\n🖌 کلینر: " . number_format($matchRates[2]) . " ت\n⌨️ تایپیست: " . number_format($matchRates[3]) . " ت");
+            $tg->sendMessage($chatId, "✅ <b>نرخ‌های اختصاصی مانهوای این گروه با موفقیت تنظیم شد.</b>");
             exit;
-        }
-
-        // مدل دوم: پیام فارسی نوین (پنل شیشه‌ای مجزا برای هر نرخ دستمزد)
-        else {
+        } else {
             $keyboard = [
                 'inline_keyboard' => [
                     [
@@ -612,19 +618,18 @@ if (!empty($text)) {
                     [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']]
                 ]
             ];
-            $tg->sendMessage($chatId, "💸 <b>بخش تنظیم دستمزد اختصاصی مانهوا:</b>\n\nدستمزد کدام سمت کاری را می‌خواهید برای مانهوای این گروه ویرایش کنید؟", $keyboard);
+            $tg->sendMessage($chatId, "💸 <b>تنظیم دستمزد اختصاصی مانهوا:</b>\n\nکدام نرخ را می‌خواهید ویرایش کنید؟", $keyboard);
             exit;
         }
     }
 
-    // ۳. دستور مدیریت قوانین گروه کاری (مخصوص مدیریت)
+    // ۳. دستور مدیریت قوانین گروه کاری
     elseif ($text === 'مدیریت قانون' || strpos($text, '/set_rules') === 0) {
         if (!$isAdminInGroup) {
             $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
             exit;
         }
 
-        // مدل اول: دستور اسلشی قدیمی
         if (strpos($text, '/set_rules') === 0) {
             $rulesText = trim(str_replace('/set_rules', '', $text));
             if (empty($rulesText)) {
@@ -635,12 +640,9 @@ if (!empty($text)) {
             $stmt = $db->prepare("INSERT INTO group_rules_list (bot_id, group_id, title, description) VALUES (:bot_id, :g_id, 'قوانین عمومی', :rules)");
             $stmt->execute(['bot_id' => $botId, 'g_id' => $chatId, 'rules' => $rulesText]);
 
-            $tg->sendMessage($chatId, "✅ <b>قوانین تیمی با موفقیت ثبت شد.</b>");
+            $tg->sendMessage($chatId, "✅ <b>قوانین تیمی ثبت شد.</b>");
             exit;
-        }
-
-        // مدل دوم: منوی تعاملی قوانین به صورت شیشه‌ای عنوان‌دار
-        else {
+        } else {
             $keyboard = [
                 'inline_keyboard' => [
                     [
@@ -650,21 +652,20 @@ if (!empty($text)) {
                     [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']]
                 ]
             ];
-            $tg->sendMessage($chatId, "📖 <b>بخش مدیریت قوانین تیمی این مانهوا:</b>\n\nیکی از گزینه‌های مدیریتی زیر را لمس کنید:", $keyboard);
+            $tg->sendMessage($chatId, "📖 <b>بخش قوانین تیمی این مانهوا:</b>\n\nانتخاب کنید:", $keyboard);
             exit;
         }
     }
 
-    // ۴. دستور مشاهده قوانین کاری (عمومی اعضا)
+    // ۴. دستور مشاهده قوانین کاری
     elseif ($text === 'قوانین' || $text === 'قوانین گروه' || $text === '/rules') {
-        // باز کردن هوشمند آرشیو قوانین به صورت شیشه‌ای با ورق‌زن
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '📖 مشاهده قوانین و استانداردها', 'callback_data' => 'grp_user_rules_1']],
                 [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']]
             ]
         ];
-        $tg->sendMessage($chatId, "📖 <b>بخش استانداردهای تیمی مانهوای گروه:</b>\n\nبرای دسترسی به طبقه‌بندی قوانین، دکمه زیر را فشار دهید:", $keyboard);
+        $tg->sendMessage($chatId, "📖 <b>بخش استانداردهای تیمی گروه:</b>", $keyboard);
         exit;
     }
 
@@ -692,11 +693,11 @@ if (!empty($text)) {
             $resp = "📚 <b>وضعیت پروژه: «{$m['title']}»</b>\n"
                   . "🔢 آخرین چپتر ثبت شده: <code>{$m['last_chapter']}</code>\n"
                   . "🎭 ژانرها: {$m['genres']}\n\n"
-                  . "👥 <b>اعضای تیم فعال مانهوا:</b>\n"
+                  . "👥 <b>اعضای فعال مانهوا:</b>\n"
                   . "├ مترجمین: " . (empty($staff['translator']) ? "❌ بدون انتساب" : implode('، ', $staff['translator'])) . "\n"
                   . "├ کلینرها: " . (empty($staff['cleaner']) ? "❌ بدون انتساب" : implode('، ', $staff['cleaner'])) . "\n"
                   . "└ تایپیست‌ها: " . (empty($staff['typesetter']) ? "❌ بدون انتساب" : implode('، ', $staff['typesetter'])) . "\n\n"
-                  . "💡 برای ثبت چپتر، تایپیست باید دستور <code>/add_file_chpter [شماره]</code> را روی کار ریپلای کند.";
+                  . "💡 ثبت چپتر با ریپلای دستور <code>/add_file_chpter [شماره]</code> روی فایل انجام می‌شود.";
             $tg->sendMessage($chatId, $resp);
         }
         exit;
@@ -713,15 +714,15 @@ if (!empty($text)) {
             $stmtCh->execute(['bot_id' => $botId, 'm_id' => $m['id']]);
             $totalCh = $stmtCh->fetch()['total_ch'];
 
-            $statsText = "📊 <b>آمار کارکرد و پیشرفت پروژه «{$m['title']}»:</b>\n\n"
-                       . "📈 مجموع چپترهای تایید نهایی شده در این گروه: <code>{$totalCh}</code> چپتر\n"
-                       . "🕒 وضعیت نظارت بر کارکرد: فعال و زنده";
+            $statsText = "📊 <b>آمار پیشرفت پروژه «{$m['title']}»:</b>\n\n"
+                       . "📈 مجموع چپترهای تایید نهایی شده: <code>{$totalCh}</code> چپتر\n"
+                       . "🕒 وضعیت پایش راکد ماندن: فعال";
             $tg->sendMessage($chatId, $statsText);
         }
         exit;
     }
 
-    // ۷. دستور آغاز فرآیند اضافه کردن مانهوا به گروه (سنتی)
+    // ۷. دستور آغاز فرآیند اضافه کردن مانهوا به گروه
     elseif (strpos($text, '/add_manhwa') === 0) {
         if (!$isAdminInGroup) {
             $tg->sendMessage($chatId, "⚠️ این دستور مخصوص مدیریت است.");
@@ -729,11 +730,11 @@ if (!empty($text)) {
         }
 
         FSM::setStep($botId, $userId, 'waiting_group_manhwa_info');
-        $tg->sendMessage($chatId, "📥 <b>شروع فرآیند ثبت مانهوا برای این گروه:</b>\n\nلطفاً یک تصویر (کاور مانهوا) ارسال کنید و در کپشن (Caption) آن، مشخصات را دقیقاً با الگوی زیر بنویسید:\n\n<code>اسم: نام مانهوا\nخلاصه: خلاصه داستان را اینجا بنویسید\nژانر: ژانرهای مانهوا</code>");
+        $tg->sendMessage($chatId, "📥 <b>شروع ثبت مانهوا:</b>\n\nلطفاً تصویر کاور را بفرستید و در کپشن آن اطلاعات را به این فرمت بنویسید:\n\n<code>اسم: نام مانهوا\nخلاصه: خلاصه داستان\nژانر: ژانرها</code>");
         exit;
     }
 
-    // ۸. دستور ارسال فایل چپتر برای تایید و ثبت حقوق اعضا (سازگار با بستر انتساب چندگانه اعضا)
+    // ۸. دستور ارسال فایل چپتر برای تایید و ثبت حقوق اعضا
     elseif (strpos($text, '/add_file_chpter') === 0) {
         $replyTo = $message['reply_to_message'] ?? null;
         if (!$replyTo) {
@@ -743,7 +744,7 @@ if (!empty($text)) {
 
         $repliedFileId = $replyTo['document']['file_id'] ?? end($replyTo['photo'])['file_id'] ?? null;
         if (!$repliedFileId) {
-            $tg->sendMessage($chatId, "❌ پیغام ریپلای شده حاوی فایل سند (Document) یا تصویر معتبر نیست.");
+            $tg->sendMessage($chatId, "❌ پیغام ریپلای شده حاوی سند یا تصویر معتبر نیست.");
             exit;
         }
 
@@ -774,7 +775,7 @@ if (!empty($text)) {
         }
 
         if (empty($assigned['translator']) || empty($assigned['cleaner']) || empty($assigned['typesetter'])) {
-            $tg->sendMessage($chatId, "⚠️ لطفاً ابتدا تیم پروژه را با دستور <code>/add_team</code> ست کنید. بدون ست کردن تیم، مبالغ حقوق چپتر قابل پردازش نیست.");
+            $tg->sendMessage($chatId, "⚠️ لطفاً ابتدا تیم پروژه را با دستور <code>/add_team</code> ست کنید.");
             exit;
         }
 
@@ -826,7 +827,7 @@ if (!empty($text)) {
         ]);
         $newChapterId = $stmtCh->fetch()['id'];
 
-        $tg->sendMessage($chatId, "📥 چپتر <code>{$chapterNum}</code> مانهوای <b>«{$manhwa['title']}»</b> با موفقیت دریافت شد و جهت تایید نهایی و واریز حقوق برای ادمین کل فرستاده شد.");
+        $tg->sendMessage($chatId, "📥 چپتر <code>{$chapterNum}</code> مانهوای <b>«{$manhwa['title']}»</b> دریافت و برای ادمین فرستاده شد.");
 
         $stmtAdmins = $db->prepare("SELECT tg_id FROM users WHERE bot_id = :bot_id AND (role = 'admin' OR role = 'owner') AND status = 'approved' LIMIT 5");
         $stmtAdmins->execute(['bot_id' => $botId]);
@@ -840,7 +841,7 @@ if (!empty($text)) {
                       . "├ مترجم: " . number_format($rateT) . " تومان\n"
                       . "├ کلینر: " . number_format($rateC) . " تومان\n"
                       . "└ تایپیست: " . number_format($rateTy) . " تومان\n\n"
-                      . "💡 تایید چپتر باعث واریز خودکار مبالغ بالا به کیف پول اعضا و آپدیت چپتر مانهوا می‌شود.";
+                      . "تایید نهایی باعث واریز خودکار حقوق به حساب پرسنل می‌شود.";
 
         $keyboard = [
             'inline_keyboard' => [
@@ -850,12 +851,6 @@ if (!empty($text)) {
                 ]
             ]
         ];
-
-        if (function_exists('fastcgi_finish_request')) {
-            echo json_encode(['ok' => true]);
-            session_write_close();
-            fastcgi_finish_request();
-        }
 
         foreach ($admins as $ad) {
             $tg->sendDocument($ad['tg_id'], $repliedFileId, $adminCaption, $keyboard);
@@ -872,7 +867,7 @@ if (!empty($text)) {
         preg_match('/\/unassign\s+(translator|cleaner|typesetter)/', $text, $matchRole);
         
         if (!$matchRole) {
-            $tg->sendMessage($chatId, "❌ <b>دستور نامعتبر است.</b>\n\nقالب استفاده:\n<code>/unassign [role]</code>\n\nمثال: <code>/unassign translator</code>");
+            $tg->sendMessage($chatId, "❌ قالب استفاده:\n<code>/unassign [role]</code>\nمثال: <code>/unassign translator</code>");
             exit;
         }
 
@@ -886,28 +881,166 @@ if (!empty($text)) {
             $stmtDel->execute(['bot_id' => $botId, 'm_id' => $m['id'], 'role' => $roleToUnassign]);
 
             $roleFarsiName = ($roleToUnassign === 'translator') ? 'مترجم' : (($roleToUnassign === 'cleaner') ? 'کلینر' : 'تایپیست');
-            $tg->sendMessage($chatId, "✅ تمامی افراد متصل به نقش <b>{$roleFarsiName}</b> با موفقیت از این پروژه عزل شدند.");
+            $tg->sendMessage($chatId, "✅ پرسنل نقش <b>{$roleFarsiName}</b> از این پروژه عزل شدند.");
         }
         exit;
     }
 
-    // ۱۰. راهنمای ربات در گروه
+    // ۱۰. جستجوی چپتر خام از آرشیو با دستور اسلشی یا دکمه شیشه‌ای
+    elseif (preg_match('/^\/chapter\s+(\d+)/', $text, $matchRawCh)) {
+        $chNum = (int)$matchRawCh[1];
+
+        $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
+        $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
+        $manhwa = $stmtM->fetch();
+
+        if ($manhwa) {
+            $stmtRaw = $db->prepare("SELECT file_id, file_name FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id AND chapter_num = :ch_num LIMIT 1");
+            $stmtRaw->execute(['bot_id' => $botId, 'm_id' => $manhwa['id'], 'ch_num' => $chNum]);
+            $raw = $stmtRaw->fetch();
+
+            if ($raw) {
+                $caption = "📁 <b>فایل خام چپتر {$chNum} مانهوای «{$manhwa['title']}»</b>";
+                $tg->sendDocument($chatId, $raw['file_id'], $caption);
+            } else {
+                $tg->sendMessage($chatId, "❌ چپتر خام شماره <code>{$chNum}</code> برای این مانهوا یافت نشد.");
+            }
+        }
+        exit;
+    }
+
+    // ۱۱. دستورات مدیریتی گروه: سکوت (Mute)، بن و اخراج موقت/دائم، سکوت تیمی و اخطار
+    elseif (strpos($text, '/mute') === 0 && $isAdminInGroup) {
+        $replyTo = $message['reply_to_message'] ?? null;
+        if (!$replyTo) {
+            $tg->sendMessage($chatId, "❌ این دستور باید روی پیام کاربر هدف ریپلای شود.");
+            exit;
+        }
+        $targetId = $replyTo['from']['id'];
+
+        $tg->apiRequest('restrictChatMember', [
+            'chat_id' => $chatId,
+            'user_id' => $targetId,
+            'permissions' => [
+                'can_send_messages' => false,
+                'can_send_media_messages' => false,
+                'can_send_polls' => false,
+                'can_send_other_messages' => false
+            ],
+            'until_date' => time() + 86400 // سکوت ۲۴ ساعته پیش‌فرض
+        ]);
+        $tg->sendMessage($chatId, "🔇 کاربر مورد نظر به مدت ۲۴ ساعت در گروه بی‌صدا (Mute) شد.");
+        exit;
+    }
+
+    elseif (strpos($text, '/ban') === 0 && $isAdminInGroup) {
+        $replyTo = $message['reply_to_message'] ?? null;
+        if (!$replyTo) {
+            $tg->sendMessage($chatId, "❌ این دستور باید روی پیام کاربر هدف ریپلای شود.");
+            exit;
+        }
+        $targetId = $replyTo['from']['id'];
+
+        // بررسی بن موقت روزانه یا بن دائم
+        preg_match('/\/ban\s+(\d+)/', $text, $matchDays);
+        if ($matchDays) {
+            $days = (int)$matchDays[1];
+            $untilDate = time() + ($days * 86400);
+            $tg->apiRequest('banChatMember', ['chat_id' => $chatId, 'user_id' => $targetId, 'until_date' => $untilDate]);
+            $tg->sendMessage($chatId, "⛔️ کاربر مورد نظر با موفقیت به مدت <code>{$days}</code> روز از گروه اخراج و بن شد.");
+        } else {
+            $tg->apiRequest('banChatMember', ['chat_id' => $chatId, 'user_id' => $targetId]);
+            $tg->sendMessage($chatId, "⛔️ کاربر مورد نظر با موفقیت به صورت دائمی از این گروه اخراج و بن شد.");
+        }
+        exit;
+    }
+
+    elseif (strpos($text, '/warn') === 0 && $isAdminInGroup) {
+        $replyTo = $message['reply_to_message'] ?? null;
+        if (!$replyTo) {
+            $tg->sendMessage($chatId, "❌ این دستور باید روی پیام کاربر هدف ریپلای شود.");
+            exit;
+        }
+        $targetId = $replyTo['from']['id'];
+
+        $stmt = $db->prepare("UPDATE users SET warnings = warnings + 1 WHERE bot_id = :bot_id AND tg_id = :tg_id RETURNING warnings");
+        $stmt->execute(['bot_id' => $botId, 'tg_id' => $targetId]);
+        $warns = $stmt->fetch()['warnings'];
+
+        $tg->sendMessage($chatId, "⚠️ کاربر یک اخطار انضباطی دریافت کرد. تعداد کل اخطارهای او در تیم: <code>{$warns}</code>");
+        $tg->sendMessage($targetId, "⚠️ <b>هشدار! شما یک اخطار انضباطی در گروه دریافت کردید.</b>");
+        exit;
+    }
+
+    // بن تیمی (بن و اخراج کامل از دیتابیس ربات و گروه‌ها با تاییدیه ادمین)
+    elseif (strpos($text, '/team_ban') === 0 && $isAdminInGroup) {
+        $replyTo = $message['reply_to_message'] ?? null;
+        if (!$replyTo) {
+            $tg->sendMessage($chatId, "❌ این دستور باید روی پیام کاربر هدف ریپلای شود.");
+            exit;
+        }
+        $targetId = $replyTo['from']['id'];
+        $targetName = $replyTo['from']['first_name'] ?? 'کاربر';
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '✅ بله، بن تیمی شود', 'callback_data' => "grp_teamban_confirm_{$targetId}"],
+                    ['text' => '❌ لغو عملیات', 'callback_data' => 'grp_cancel']
+                ]
+            ]
+        ];
+
+        $tg->sendMessage($chatId, "⚠️ <b>درخواست بن تیمی کاربر «{$targetName}»:</b>\n\nبا تایید این درخواست، کاربر از ربات معلق شده و از این گروه مانهوا به طور دائمی اخراج خواهد شد. آیا مطمئن هستید؟", [
+            'inline_keyboard' => $keyboard['inline_keyboard'],
+            'reply_to_message_id' => $message['message_id']
+        ]);
+        exit;
+    }
+
+    elseif (strpos($text, '/unban') === 0 && $isAdminInGroup) {
+        $replyTo = $message['reply_to_message'] ?? null;
+        if (!$replyTo) {
+            $tg->sendMessage($chatId, "❌ این دستور باید روی پیام کاربر هدف ریپلای شود.");
+            exit;
+        }
+        $targetId = $replyTo['from']['id'];
+
+        $tg->apiRequest('unbanChatMember', ['chat_id' => $chatId, 'user_id' => $targetId, 'only_if_banned' => true]);
+        
+        // بازگرداندن وضعیت کاربر به تایید شده در صورت بن بودن در تیم
+        $stmt = $db->prepare("UPDATE users SET status = 'approved' WHERE bot_id = :bot_id AND tg_id = :tg_id AND status = 'banned'");
+        $stmt->execute(['bot_id' => $botId, 'tg_id' => $targetId]);
+
+        $tg->sendMessage($chatId, "✅ مسدودیت کاربر با موفقیت در گروه (و تیم در صورت بن بودن) لغو شد. تاریخچه و کیف پول کاربر حفظ شده است.");
+        exit;
+    }
+
+    // ۱۲. راهنمای ربات در گروه
     elseif ($text === '/help' || $text === 'راهنما') {
-        $helpText = "📖 <b>راهنمای دستورات گروه تیم مانهوا:</b>\n\n"
-                  . "📌 <b>دستورات شیشه‌ای و فارسی جدید (با ارسال مستقیم کلمات):</b>\n"
+        $helpText = "📖 <b>راهنمای دستورات گروه مانهوا:</b>\n\n"
+                  . "📌 <b>دستورات شیشه‌ای و فارسی جدید:</b>\n"
                   . "├ <code>افزودن تیم</code> ➔ مدیریت شیشه‌ای و انتساب پرسنل با جستجو\n"
                   . "├ <code>تنظیم قیمت</code> ➔ پیکربندی نرخ شیشه‌ای دستمزد آثار\n"
                   . "├ <code>مدیریت قانون</code> ➔ ثبت و حذف عنوان‌دار قوانین تیمی\n"
                   . "├ <code>قوانین</code> ➔ نمایش و ورق زدن آرشیو قوانین برای اعضا\n"
-                  . "├ <code>وضعیت</code> ➔ جزییات کامل تیمی مانهوای این گروه\n"
-                  . "└ <code>آمار</code> ➔ گزارش و چپترهای انجام‌شده این پروژه\n\n"
+                  . "├ <code>وضعیت</code> ➔ جزییات کامل مانهوای این گروه\n"
+                  . "└ <code>آمار</code> ➔ گزارش چپترهای انجام‌شده این پروژه\n\n"
                   . "📌 <b>دستورات اسلشی سنتی:</b>\n"
-                  . "├ <code>/add_manhwa</code> ➔ متصل کردن گروه کاری به پروژه جدید مانهوا\n"
+                  . "├ <code>/add_manhwa</code> ➔ متصل کردن گروه به پروژه جدید مانهوا\n"
                   . "├ <code>/add_team</code> ➔ ثبت سنتی اعضای تیم کاری\n"
                   . "├ <code>/add_file_chpter [شماره]</code> ➔ ثبت چپتر نهایی جهت بررسی و پرداخت\n"
                   . "├ <code>/set_rates [مترجم] [کلینر] [تایپیست]</code> ➔ تنظیم حقوق مانهوا\n"
                   . "├ <code>/set_rules [متن]</code> ➔ ثبت قوانین به روش قدیمی\n"
-                  . "└ <code>/unassign [role]</code> ➔ عزل کامل اعضا از نقش مشخص‌شده";
+                  . "├ <code>/unassign [role]</code> ➔ عزل کامل اعضا از نقش مشخص‌شده\n"
+                  . "└ <code>/chapter [شماره]</code> ➔ دریافت خودکار فایل چپتر خام از آرشیو گروه\n\n"
+                  . "📌 <b>دستورات نظارتی ادمین در گروه (با ریپلای روی پیام کاربر):</b>\n"
+                  . "├ <code>/mute</code> ➔ سکوت و بی‌صدا کردن کاربر در گروه به مدت ۲۴ ساعت\n"
+                  . "├ <code>/ban</code> ➔ اخراج و بن دائمی کاربر از گروه جاری\n"
+                  . "├ <code>/ban [روز]</code> ➔ اخراج و بن موقت کاربر برای تعداد روز مشخص\n"
+                  . "├ <code>/unban</code> ➔ لغو مسدودیت کاربر در گروه و تیم\n"
+                  . "├ <code>/warn</code> ➔ ثبت اخطار انضباطی برای کاربر در دیتابیس ربات\n"
+                  . "└ <code>/team_ban</code> ➔ اخراج از گروه و بن/مسدودسازی کامل کاربر در کل دیتابیس تیم";
         
         $tg->sendMessage($chatId, $helpText);
         exit;
