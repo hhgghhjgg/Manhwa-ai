@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/salary_system.php
- * Role: Financial calculations, Payout Processor, Lazy Monthly Reset & Activity Monitor with 22-Way Permissions Integration
+ * Role: Financial calculations, Payout Processor, Lazy Monthly Reset & Activity Monitor
  */
 
 // اطمینان از صحت کانتکست لود شده
@@ -69,12 +69,14 @@ if (!function_exists('checkInactiveManhwas')) {
      */
     function checkInactiveManhwas($db, $tg, $botId) {
         // واکشی مانهواهایی که از آخرین فعالیت کاربری آن‌ها بیش از روزهای مجاز گذشته است
+        // تغییر فیلتر جدید: اگر وضعیت مانهوا روی درآپ (dropped) یا پایان فصل (season_end) باشد، از این چرخه پایش خارج است
         $stmtInactive = $db->prepare("
             SELECT m.id, m.title, m.group_id, m.last_active_at,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - m.last_active_at)) as inactive_days
             FROM manhwas m
             WHERE m.bot_id = :bot_id 
               AND m.group_id IS NOT NULL
+              AND (m.status IS NULL OR m.status NOT IN ('dropped', 'season_end'))
               AND m.last_active_at < CURRENT_TIMESTAMP - (COALESCE(
                   (SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'inactivity_warning_days' LIMIT 1), '7'
               )::integer * INTERVAL '1 day')
@@ -112,8 +114,8 @@ if (!function_exists('checkInactiveManhwas')) {
             $warningText = "🚨 <b>هشدار راکد ماندن پروژه مانهوا!</b>\n\n"
                          . "📚 مانهوا: <b>«{$manhwa['title']}»</b>\n"
                          . "⏳ مدت زمان بدون ثبت چپتر جدید: <code>" . (int)$manhwa['inactive_days'] . "</code> روز\n\n"
-                         . "⚠️ تیم زحمت‌کش متصل به این مانهوا در این مدت هیچ فایل چپتر یا پیشرفتی در گروه ثبت نکرده‌اند!\n\n"
-                         . "📢 توجه مدیران و ادمین‌های پروژه:{$mentions}\nلطفاً وضعیت پیشرفت کار را به صورت فوری پیگیری فرمایید.";
+                         . "⚠️ تیم متصل به این مانهوا در این مدت هیچ پیشرفتی در گروه ثبت نکرده‌اند!\n\n"
+                         . "📢 توجه مدیران مانهوا:{$mentions}\nلطفاً وضعیت پیشرفت کار را پیگیری فرمایید.";
 
             // ارسال پیام اخطار به گروه اختصاصی مانهوا
             $tg->sendMessage($manhwa['group_id'], $warningText);
@@ -192,38 +194,55 @@ if (!function_exists('processChapterApproval')) {
                 'id'          => $chapter['manhwa_id']
             ]);
 
-            // ۳. تسویه حساب مالی و پرداخت سهم دستمزد اعضای متصل به این مانهوا
-            $payouts = [
+            // ۳. تسویه حساب مالی تجمعی برای اعضایی که ممکن است چندشغله باشند
+            $rawPayouts = [
                 'translator' => ['id' => $chapter['translator_id'], 'pay' => (float)$chapter['translator_pay'], 'role_text' => 'مترجم'],
                 'cleaner'    => ['id' => $chapter['cleaner_id'],    'pay' => (float)$chapter['cleaner_pay'],    'role_text' => 'کلینر'],
                 'typesetter' => ['id' => $chapter['typesetter_id'], 'pay' => (float)$chapter['typesetter_pay'], 'role_text' => 'تایپیست']
             ];
 
-            foreach ($payouts as $p) {
+            // تجمیع مبالغ و نقش‌ها بر اساس آیدی عددی منحصر به فرد کاربران
+            $userPayouts = [];
+            foreach ($rawPayouts as $p) {
                 if (!empty($p['id'])) {
-                    // واریز به سهم کل، سهم ماه جاری و افزایش کل چپترهای کار شده فرد
-                    $stmtUserUpdate = $db->prepare("
-                        UPDATE users 
-                        SET total_chapters = total_chapters + 1, 
-                            monthly_chapters = monthly_chapters + 1, 
-                            total_earned = total_earned + :pay 
-                        WHERE bot_id = :bot_id AND tg_id = :tg_id
-                    ");
-                    $stmtUserUpdate->execute([
-                        'pay'    => $p['pay'],
-                        'bot_id' => $botId,
-                        'tg_id'  => $p['id']
-                    ]);
-
-                    // ارسال فیش حقوقی دیجیتالی مستقیم به پی‌وی هرکدام از اعضای متصل به چپتر
-                    $notifyText = "🎉 <b>حقوق چپتر جدید به موجودی شما اضافه شد!</b>\n\n"
-                                . "📚 مانهوا: <b>«{$manhwaTitle}»</b>\n"
-                                . "🔢 شماره چپتر کار شده: <code>{$chapter['chapter_num']}</code>\n"
-                                . "⚔️ سمت شما: {$p['role_text']}\n"
-                                . "💰 سهم دستمزد واریز شده: <code>" . number_format($p['pay']) . "</code> تومان\n\n"
-                                . "💡 آمار تراکنش‌ها و موجودی شما در ربات به‌روزرسانی شد. خسته نباشید اعضا! 💖";
-                    $tg->sendMessage($p['id'], $notifyText);
+                    $uid = $p['id'];
+                    if (!isset($userPayouts[$uid])) {
+                        $userPayouts[$uid] = [
+                            'pay' => 0.0,
+                            'roles' => [],
+                            'chapters_increment' => 1 // فقط ۱ چپتر به آمار کل اضافه می‌شود
+                        ];
+                    }
+                    $userPayouts[$uid]['pay'] += $p['pay'];
+                    $userPayouts[$uid]['roles'][] = $p['role_text'];
                 }
+            }
+
+            // اعمال تراکنش نهایی برای هر کاربر
+            foreach ($userPayouts as $uid => $data) {
+                $stmtUserUpdate = $db->prepare("
+                    UPDATE users 
+                    SET total_chapters = total_chapters + :ch_inc, 
+                        monthly_chapters = monthly_chapters + :ch_inc, 
+                        total_earned = total_earned + :pay 
+                    WHERE bot_id = :bot_id AND tg_id = :tg_id
+                ");
+                $stmtUserUpdate->execute([
+                    'ch_inc' => $data['chapters_increment'],
+                    'pay'    => $data['pay'],
+                    'bot_id' => $botId,
+                    'tg_id'  => $uid
+                ]);
+
+                // تولید پیام و فیش حقوقی دیجیتالی برای کاربر با ذکر نقش‌های چندگانه
+                $rolesJoined = implode(' و ', $data['roles']);
+                $notifyText = "🎉 <b>حقوق چپتر جدید به موجودی شما اضافه شد!</b>\n\n"
+                            . "📚 مانهوا: <b>«{$manhwaTitle}»</b>\n"
+                            . "🔢 شماره چپتر کار شده: <code>{$chapter['chapter_num']}</code>\n"
+                            . "⚔️ سمت‌های شما در این چپتر: <b>{$rolesJoined}</b>\n"
+                            . "💰 مجموع دستمزد واریز شده: <code>" . number_format($data['pay']) . "</code> تومان\n\n"
+                            . "💡 کیف پول شما در ربات مانهوا به‌روزرسانی شد. خسته نباشید اعضا! 💖";
+                $tg->sendMessage($uid, $notifyText);
             }
 
             $db->commit();
@@ -231,9 +250,9 @@ if (!function_exists('processChapterApproval')) {
             // ۴. ارسال پیام اتمام کار در گروه رسمی تلگرامی مانهوا
             if (!empty($groupId)) {
                 $groupText = "🔔 <b>اطلاعیه تایید چپتر جدید مانهوا!</b>\n\n"
-                           . "🎉 چپتر <code>{$chapter['chapter_num']}</code> مانهوای <b>«{$manhwaTitle}»</b> توسط مدیریت بررسی و با موفقیت تایید نهایی گردید.\n\n"
-                           . "💸 حقوق اعضای تیم متصل به پروژه محاسبه و به حساب کاربری آنها در ربات واریز شد.\n"
-                           . "خسته نباشید و تشکر فراوان از مترجم، کلینر و تایپیست این اثر! ✨";
+                           . "🎉 چپتر <code>{$chapter['chapter_num']}</code> مانهوای <b>«{$manhwaTitle}»</b> با موفقیت تایید نهایی گردید.\n\n"
+                           . "💸 حقوق اعضای تیم محاسبه و به حساب کاربری آنها در ربات واریز شد.\n"
+                           . "با تشکر فراوان از مترجم، کلینر و تایپیست این اثر! ✨";
                 $tg->sendMessage($groupId, $groupText);
             }
 
@@ -273,7 +292,7 @@ if (!function_exists('processChapterRejection')) {
             $rejectText = "❌ <b>چپتر کار شده شما تایید نشد!</b>\n\n"
                         . "📚 مانهوا: <b>«{$manhwaTitle}»</b>\n"
                         . "🔢 شماره چپتر: <code>{$chapter['chapter_num']}</code>\n\n"
-                        . "⚠️ فایل کار شده شما متاسفانه مورد تایید ادمین‌های مانهوا قرار نگرفت. لطفاً اصلاحات و ویرایش‌های لازم را انجام داده و کار اصلاح‌شده را مجدداً ارسال فرمایید.";
+                        . "⚠️ فایل کار شده شما متاسفانه مورد تایید ادمین‌های مانهوا قرار نگرفت. لطفاً اصلاحات لازم را انجام داده و کار اصلاح‌شده را مجدداً ارسال فرمایید.";
             $tg->sendMessage($chapter['typesetter_id'], $rejectText);
         }
 
@@ -282,7 +301,7 @@ if (!function_exists('processChapterRejection')) {
 }
 
 // ==========================================
-// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین با کنترل ۲۲ دسترسی جدید
+// ۴. اینترسپت مستقیم دکمه‌های کالبک تایید یا رد چپتر توسط ادمین با کنترل دسترسی‌ها
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
@@ -304,7 +323,7 @@ if ($callbackQuery) {
         $result = processChapterApproval($db, $tg, $botId, $chapterId, $adminChatId);
 
         if ($result === true) {
-            $tg->editMessageText($adminChatId, $messageId, "✅ <b>چپتر تایید شد!</b>\n\nدستمزدها و کیف پول اعضا آپدیت گردید و فیش‌های گزارش کار برای مترجم، کلینر و تایپیست ارسال شد.");
+            $tg->editMessageText($adminChatId, $messageId, "✅ <b>چپتر تایید شد!</b>\n\nدستمزدها و کیف پول اعضا آپدیت گردید و فیش‌های گزارش کار برای اعضای مرتبط ارسال شد.");
         } else {
             $tg->sendMessage($adminChatId, $result);
         }
