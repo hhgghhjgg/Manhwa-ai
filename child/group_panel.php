@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/group_panel.php
- * Role: Group Command Processor with Dual Mode, Silence, Warn, & Dynamic Raw Chapter Browser
+ * Role: Group Command Processor with Dual Mode, Silence, Warn, & Dynamic Raw Chapter Browser (Fully Fixed)
  */
 
 // اطمینان از صحت متغیرها و کانتکست لود شده
@@ -330,7 +330,7 @@ if ($callbackQuery && $callbackData) {
         $roleToUpdate = str_replace('grp_rate_init_', '', $callbackData);
 
         FSM::setStep($botId, $userId, "group_waiting_rate_{$roleToUpdate}");
-        $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینر' : 'تایپیست');
+        $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینer' : 'تایپیست');
 
         $tg->sendMessage($chatId, "💸 لطفاً دستمزد اختصاصی جدید نقش <b>«{$roleFarsi}»</b> را به عدد (به تومان) وارد کنید:", [
             'reply_to_message_id' => $messageId
@@ -543,7 +543,7 @@ if ($callbackQuery && $callbackData) {
         ]);
 
         if ($stmtCheck->fetch()) {
-            // از قبل فعال بوده است؛ پس آن را حذف (Toggle Off) می‌کنیم
+            // Toggle Off
             $stmtDel = $db->prepare("DELETE FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND role = :role AND user_id = :user_id");
             $stmtDel->execute([
                 'bot_id'  => $botId,
@@ -553,7 +553,7 @@ if ($callbackQuery && $callbackData) {
             ]);
             $tg->answerCallbackQuery($callbackId, "❌ نقش " . ($roleToSet === 'translator' ? 'مترجم' : ($roleToSet === 'cleaner' ? 'کلینر' : 'تایپیست')) . " برای شما غیرفعال شد.");
         } else {
-            // وجود نداشته؛ پس آن را اضافه (Toggle On) می‌کنیم با قید ON CONFLICT جهت جلوگیری از کرش
+            // Toggle On
             $stmtIns = $db->prepare("
                 INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
                 VALUES (:bot_id, :manhwa_id, :role, :user_id)
@@ -1246,9 +1246,7 @@ if (!empty($text)) {
         }
         $buttons[] = [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']];
 
-        $tg->sendMessage($chatId, "📂 <b>لیست چپترهای خام مانهوای «{$manhwa['title']}» (صفحه {$page} از {$totalPages}):</b>", [
-            'reply_markup' => ['inline_keyboard' => $buttons]
-        ]);
+        $tg->sendMessage($chatId, "📂 <b>لیست چپترهای خام مانهوای «{$manhwa['title']}» (صفحه {$page} از {$totalPages}):</b>", ['inline_keyboard' => $buttons]);
         exit;
     }
 
@@ -1317,6 +1315,86 @@ if (!empty($text)) {
                   . "└ <code>/team_ban</code> ➔ اخراج از گروه و بن/مسدودسازی کامل کاربر در کل دیتابیس تیم";
         
         $tg->sendMessage($chatId, $helpText);
+        exit;
+    }
+}
+
+// تیک زدن و انتخاب نقش‌های چندگانه پرسنل به محض استارت در گروه
+if ($callbackQuery && $callbackData) {
+    if (strpos($callbackData, 'grp_self_toggle_') === 0) {
+        $data = str_replace('grp_self_toggle_', '', $callbackData);
+        $parts = explode('_', $data);
+        $roleToSet = $parts[0];
+        $manhwaId  = (int)$parts[1];
+
+        // بررسی اینکه کاربر ابتدا باید تایید شده باشد
+        $stmtUser = $db->prepare("SELECT status FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+        $stmtUser->execute(['bot_id' => $botId, 'tg_id' => $userId]);
+        $uRow = $stmtUser->fetch();
+
+        if (!$uRow || $uRow['status'] !== 'approved') {
+            $tg->answerCallbackQuery($callbackId, "⚠️ خطا: شما ابتدا باید از بخش کاربری تست استخدام داده و عضو رسمی تیم شوید!", true);
+            exit;
+        }
+
+        // بررسی وجود رکورد برای توگل کردن
+        $stmtCheck = $db->prepare("SELECT 1 FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND role = :role AND user_id = :user_id LIMIT 1");
+        $stmtCheck->execute([
+            'bot_id'  => $botId,
+            'm_id'    => $manhwaId,
+            'role'    => $roleToSet,
+            'user_id' => $userId
+        ]);
+
+        if ($stmtCheck->fetch()) {
+            // Toggle Off
+            $stmtDel = $db->prepare("DELETE FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND role = :role AND user_id = :user_id");
+            $stmtDel->execute([
+                'bot_id'  => $botId,
+                'm_id'    => $manhwaId,
+                'role'     => $roleToSet,
+                'user_id' => $userId
+            ]);
+            $tg->answerCallbackQuery($callbackId, "❌ نقش " . ($roleToSet === 'translator' ? 'مترجم' : ($roleToSet === 'cleaner' ? 'کلینر' : 'تایپیست')) . " برای شما غیرفعال شد.");
+        } else {
+            // Toggle On
+            $stmtIns = $db->prepare("
+                INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
+                VALUES (:bot_id, :manhwa_id, :role, :user_id)
+                ON CONFLICT (bot_id, manhwa_id, role) DO UPDATE SET user_id = EXCLUDED.user_id
+            ");
+            $stmtIns->execute([
+                'bot_id'    => $botId,
+                'manhwa_id' => $manhwaId,
+                'role'      => $roleToSet,
+                'user_id'   => $userId
+            ]);
+            $tg->answerCallbackQuery($callbackId, "✅ نقش " . ($roleToSet === 'translator' ? 'مترجم' : ($roleToSet === 'cleaner' ? 'کلینر' : 'تایپیست')) . " با موفقیت برای شما تیک خورد.");
+        }
+
+        // بروزرسانی فیزیکی تیک‌های منوی شیشه‌ای
+        $stmtAss = $db->prepare("SELECT role FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND user_id = :user_id");
+        $stmtAss->execute(['bot_id' => $botId, 'm_id' => $manhwaId, 'user_id' => $userId]);
+        $activeAss = $stmtAss->fetchAll(PDO::FETCH_COLUMN);
+
+        $isTrans = in_array('translator', $activeAss);
+        $isClean = in_array('cleaner', $activeAss);
+        $isType  = in_array('typesetter', $activeAss);
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => ($isTrans ? '✅ مترجم' : '📝 مترجم'), 'callback_data' => "grp_self_toggle_translator_{$manhwaId}"],
+                    ['text' => ($isClean ? '✅ کلینر' : '🖌 کلینر'), 'callback_data' => "grp_self_toggle_cleaner_{$manhwaId}"]
+                ],
+                [
+                    ['text' => ($isType ? '✅ تایپیست' : '⌨️ تایپیست'), 'callback_data' => "grp_self_toggle_typesetter_{$manhwaId}"]
+                ],
+                [['text' => '❌ بستن پنل', 'callback_data' => 'grp_cancel']]
+            ]
+        ];
+
+        $tg->editMessageText($chatId, $messageId, "⚔️ <b>پنل خودکار انتساب نقش‌ها:</b>\n\n👤 عضو محترم: <b>{$fullName}</b>\n\nنقش‌های کاری خود را تیک بزنید:", $keyboard);
         exit;
     }
 }
