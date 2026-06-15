@@ -2,10 +2,10 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/user_panel.php
- * Role: Full Member & Guest Dashboard Processor with Granular 22-Way Notifications Integration
+ * Role: Full Member & Guest Dashboard Processor with Working Hours Ticketing, FAQ, and Multi-Test Engine
  */
 
-// ۱. اطمینان از صحت کانتکست و متغیرهای تعریف شده در index.php و child/router.php
+// ۱. اطمینان از صحت کانتکست و متغیرهای تعریف شده
 if (!isset($botContext) || !isset($tg) || !isset($user) || !isset($db)) {
     exit;
 }
@@ -25,12 +25,9 @@ $callbackId    = $callbackQuery['id'] ?? null;
 $text          = $message['text'] ?? '';
 
 // ==========================================
-// بخش ۰: سیستم لاگ نویسی اختصاصی ربات (Bot Logging Utility)
+// بخش ۰: سیستم لاگ نویسی اختصاصی ربات
 // ==========================================
 if (!function_exists('botLog')) {
-    /**
-     * ثبت لاگ‌های اختصاصی بستر سرورلس رندر جهت خطایابی هوشمند
-     */
     function botLog($botId, $userId, $level, $logMessage, $context = []) {
         $formattedMessage = sprintf(
             "[BOT_USER_PANEL] [Bot:%d] [User:%s] [%s] %s %s",
@@ -55,7 +52,89 @@ if (!function_exists('getRoleFarsi')) {
             'owner'      => 'مالک و ادمین کل',
             'none'       => 'مهمان (داوطلب عضویت)'
         ];
-        return $roles[$roleName] ?? 'نامشخص';
+        
+        $parts = explode(',', $roleName);
+        $translated = [];
+        foreach ($parts as $p) {
+            $p = trim($p);
+            $translated[] = $roles[$p] ?? $p;
+        }
+        return implode(' + ', $translated);
+    }
+}
+
+// تابع کمکی بررسی روز و ساعت کاری تیکتینگ
+if (!function_exists('checkTicketWorkingTime')) {
+    function checkTicketWorkingTime($db, $botId) {
+        // ۱. بررسی وضعیت فعال یا بسته بودن کامل تیکتینگ
+        $stmtStatus = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'ticket_active_status' LIMIT 1");
+        $stmtStatus->execute(['bot_id' => $botId]);
+        $rowStatus = $stmtStatus->fetch();
+        $ticketStatus = $rowStatus ? $rowStatus['value'] : 'open';
+
+        if ($ticketStatus === 'closed') {
+            return [
+                'allowed' => false,
+                'reason'  => "❌ <b>بخش تیکت پشتیبانی موقتاً توسط مدیریت بسته شده است.</b>"
+            ];
+        }
+
+        // ۲. بررسی روزهای کاری تعریف شده
+        $stmtDays = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'ticket_working_days' LIMIT 1");
+        $stmtDays->execute(['bot_id' => $botId]);
+        $rowDays = $stmtDays->fetch();
+        $workingDays = $rowDays ? $rowDays['value'] : null;
+
+        if ($workingDays) {
+            $daysOfWeekFarsi = [
+                'Sunday'    => 'یکشنبه',
+                'Monday'    => 'دوشنبه',
+                'Tuesday'   => 'سه شنبه',
+                'Wednesday' => 'چهارشنبه',
+                'Thursday'  => 'پنجشنبه',
+                'Friday'    => 'جمعه',
+                'Saturday'  => 'شنبه'
+            ];
+            $currentDayFarsi = $daysOfWeekFarsi[date('l')];
+            $daysArray = explode(',', $workingDays);
+            
+            $isWorkingDay = false;
+            foreach ($daysArray as $day) {
+                if (trim($day) === $currentDayFarsi) {
+                    $isWorkingDay = true;
+                    break;
+                }
+            }
+
+            if (!$isWorkingDay) {
+                return [
+                    'allowed' => false,
+                    'reason'  => "📅 <b>امروز روز کاری بخش پشتیبانی نیست!</b>\n\n🗓️ روزهای کاری فعال تیکتینگ: <code>{$workingDays}</code>"
+                ];
+            }
+        }
+
+        // ۳. بررسی ساعات کاری تعریف شده
+        $stmtHours = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'ticket_working_hours' LIMIT 1");
+        $stmtHours->execute(['bot_id' => $botId]);
+        $rowHours = $stmtHours->fetch();
+        $workingHours = $rowHours ? $rowHours['value'] : null;
+
+        if ($workingHours && strpos($workingHours, '-') !== false) {
+            $currentTime = date('H:i');
+            list($startHour, $endHour) = explode('-', $workingHours);
+            $startHour = trim($startHour);
+            $endHour   = trim($endHour);
+
+            if ($currentTime < $startHour || $currentTime > $endHour) {
+                return [
+                    'allowed' => false,
+                    'reason'  => "⏳ <b>خارج از ساعات کاری پشتیبانی!</b>\n\n⏰ ساعت کاری فعلی: <code>{$workingHours}</code>\n💬 ساعت فعلی سرور: <code>{$currentTime}</code>"
+                ];
+            }
+        }
+
+        return ['allowed' => true];
     }
 }
 
@@ -72,7 +151,6 @@ if ($text === '/cancel' || $text === 'لغو' || (isset($callbackQuery) && $call
     }
 
     if ($status === 'approved') {
-        // بازگرداندن اعضای رسمی به پنل اصلی
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -82,14 +160,22 @@ if ($text === '/cancel' || $text === 'لغو' || (isset($callbackQuery) && $call
                 [
                     ['text' => '🏆 آزمون‌های تمرینی', 'callback_data' => 'user_practice_exams'],
                     ['text' => '✉️ تیکت پشتیبانی ادمین', 'callback_data' => 'usr_tickets_p_1']
+                ],
+                [
+                    ['text' => '❓ سوالات متداول (FAQ)', 'callback_data' => 'user_sys_faq_list_1']
                 ]
             ]
         ];
+
+        // در صورت ادمین بودن و چندشغله بودن، دکمه سوئیچ قرار می‌گیرد
+        $isAdmin = ($user['role'] === 'owner' || strpos($user['role'], 'admin') !== false);
+        if ($isAdmin) {
+            $keyboard[] = [['text' => '🛡️ پنل ادمین', 'callback_data' => 'admin_sys_mode_admin']];
+        }
         
         $roleFarsi = getRoleFarsi($role);
-        $tg->sendMessage($userId, "❌ <b>عملیات لغو شد.</b>\n\n👋 منوی اصلی اعضا (نقش شما: {$roleFarsi}):\nلطفاً یکی از گزینه‌های پنل شیشه‌ای زیر را انتخاب کنید:", $keyboard);
+        $tg->sendMessage($userId, "❌ <b>عملیات لغو شد.</b>\n\n👋 منوی اصلی اعضا (نقش شما: {$roleFarsi}):", $keyboard);
     } else {
-        // بازگرداندن کاربران مهمان به صفحه ورود استخدام
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '🤝 عضویت در تیم مانهوا', 'callback_data' => 'join_team']]
@@ -118,7 +204,7 @@ if (strpos($step, 'waiting_test_') === 0) {
 
     if (!$fileId) {
         botLog($botId, $userId, 'warning', 'User uploaded invalid file type for test submission.', ['step' => $step]);
-        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً فایل حل شده تست خود را فقط به صورت سند (Document) یا تصویر بفرستید:\n\n💡 جهت لغو، دستور <code>/cancel</code> را بفرستید.", [
+        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً فایل حل شده تست خود را فقط به صورت سند (Document) یا تصویر بفرستید:", [
             'inline_keyboard' => [[['text' => '❌ لغو و بازگشت', 'callback_data' => 'user_cancel']]]
         ]);
         exit;
@@ -141,63 +227,68 @@ if (strpos($step, 'waiting_test_') === 0) {
         FSM::setStatus($botId, $userId, 'pending_test');
         FSM::clearStep($botId, $userId);
 
-        $tg->sendMessage($userId, "✅ <b>تست شما با موفقیت به بخش عضو گیری تیم فرستاده شد.</b>\n\nپس از بررسی و تایید آن توسط ادمین‌های محترم تیم، لینک دعوت یک‌بار مصرف ورود به گروه اختصاصی کار برای شما ارسال خواهد شد. لطفاً منتظر بمانید.");
-        botLog($botId, $userId, 'info', 'Solved recruitment test successfully recorded in database.');
+        $tg->sendMessage($userId, "✅ <b>تست شما با موفقیت به بخش عضوگیری تیم فرستاده شد.</b>\n\nپس از بررسی و تایید آن توسط مدیریت، لینک دعوت برای شما ارسال خواهد شد.");
     } catch (Exception $e) {
-        botLog($botId, $userId, 'error', 'Database insertion failed during recruitment test submission.', ['error' => $e->getMessage()]);
+        botLog($botId, $userId, 'error', 'Database insertion failed.', ['error' => $e->getMessage()]);
         $tg->sendMessage($userId, "❌ خطای دیتابیس در ثبت تست حل شده. لطفاً مجدداً تلاش کنید.");
-        exit;
-    }
-
-    // بازنشانی فرآیند نوتیفیکیشن با متد دسترسی‌های ۲۲گانه جدید:
-    // فقط ادمین‌هایی که فیلد دسترسی استخدام مربوط به آن حوزه (مترجم/کلینر/تایپیست) را دارند مطلع می‌شوند.
-    $permField = 'perm_rec_translator';
-    if ($testRole === 'cleaner') {
-        $permField = 'perm_rec_cleaner';
-    } elseif ($testRole === 'typesetter') {
-        $permField = 'perm_rec_typesetter';
-    }
-
-    $stmtAdmins = $db->prepare("
-        SELECT u.tg_id 
-        FROM users u
-        LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
-        WHERE u.bot_id = :bot_id 
-          AND u.status = 'approved'
-          AND (
-              u.role = 'owner' 
-              OR (u.role = 'admin' AND ap.{$permField} = TRUE)
-          )
-    ");
-    $stmtAdmins->execute(['bot_id' => $botId]);
-    $adminsList = $stmtAdmins->fetchAll();
-
-    $roleFarsiName = getRoleFarsi($testRole);
-    $adminNotifyText = "📥 <b>یک پاسخ تست حل شده جدید ثبت شد!</b>\n\n"
-                     . "👤 کاربر: {$fullName} (@{$username})\n"
-                     . "⚔️ نقش داوطلبی: {$roleFarsiName}\n\n"
-                     . "👉 جهت مشاهده و بررسی فایل تست به پنل خود بخش [مدیریت عضوگیری -> آخرین تست‌ها] مراجعه کنید.";
-
-    foreach ($adminsList as $admin) {
-        $tg->sendMessage($admin['tg_id'], $adminNotifyText);
     }
     exit;
 }
 
-// ب) کاربر در حال نوشتن و ارسال متن تیکت پشتیبانی است
+// ب) کاربر رسمی در حال آپلود فایل تست مجدد برای نقش جدید است
+elseif (strpos($step, 'user_waiting_retest_') === 0) {
+    $testRole = str_replace('user_waiting_retest_', '', $step);
+
+    $fileId = null;
+    if (isset($message['document'])) {
+        $fileId = $message['document']['file_id'];
+    } elseif (isset($message['photo'])) {
+        $fileId = end($message['photo'])['file_id'];
+    }
+
+    if (!$fileId) {
+        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً فایل تست را به صورت سند یا تصویر ارسال کنید:");
+        exit;
+    }
+
+    try {
+        // ثبت در تست‌ها با وضعیت pending_retest
+        $stmt = $db->prepare("
+            INSERT INTO submitted_tests (bot_id, user_id, role, file_id, status)
+            VALUES (:bot_id, :user_id, :role, :file_id, 'pending_retest')
+        ");
+        $stmt->execute([
+            'bot_id'  => $botId,
+            'user_id' => $userId,
+            'role'    => $testRole,
+            'file_id' => $fileId
+        ]);
+
+        FSM::clearStep($botId, $userId);
+        $tg->sendMessage($userId, "✅ <b>پاسخ تست نقش دوم شما با موفقیت برای مدیریت فرستاده شد.</b>\n\nپس از ارزیابی، نقش جدید به پروفایل شما اضافه خواهد شد.");
+    } catch (Exception $e) {
+        $tg->sendMessage($userId, "❌ خطا در ثبت اطلاعات تست مجدد.");
+    }
+    exit;
+}
+
+// ج) کاربر در حال نوشتن متن تیکت پشتیبانی است
 elseif (strpos($step, 'user_typing_ticket_') === 0) {
     $targetAdminPart = str_replace('user_typing_ticket_', '', $step);
     $assignedAdminId = ($targetAdminPart === 'null') ? null : (int)$targetAdminPart;
 
     if (empty($text)) {
-        botLog($botId, $userId, 'warning', 'User attempted to submit an empty support ticket.', ['step' => $step]);
-        $tg->sendMessage($userId, "❌ تیکت شما نمی‌تواند خالی باشد. لطفاً موضوع یا متن مشکل خود را تایپ کرده و بفرستید:\n\n💡 جهت لغو، دستور <code>/cancel</code> را بفرستید.", [
-            'inline_keyboard' => [[['text' => '❌ لغو و بازگشت', 'callback_data' => 'user_cancel']]]
-        ]);
+        $tg->sendMessage($userId, "❌ تیکت شما نمی‌تواند خالی باشد. لطفاً متن تیکت را بنویسید:");
         exit;
     }
 
-    botLog($botId, $userId, 'info', 'User submitting support ticket message.', ['assigned_admin' => $assignedAdminId, 'text_snippet' => substr($text, 0, 30)]);
+    // بررسی نهایی مجدد زمان‌بندی کاری قبل از ثبت نهایی پیام
+    $timeCheck = checkTicketWorkingTime($db, $botId);
+    if (!$timeCheck['allowed']) {
+        FSM::clearStep($botId, $userId);
+        $tg->sendMessage($userId, $timeCheck['reason']);
+        exit;
+    }
 
     try {
         $stmtTicket = $db->prepare("
@@ -214,55 +305,14 @@ elseif (strpos($step, 'user_typing_ticket_') === 0) {
         $newTicketId = $stmtTicket->fetch()['id'];
 
         FSM::clearStep($botId, $userId);
-        $tg->sendMessage($userId, "✅ <b>تیکت پشتیبانی شما با موفقیت ثبت شد و به بخش مدیریت ارسال گردید.</b>\n\n📌 شماره تیکت شما: <code>#{$newTicketId}</code>\n\nبه محض بررسی تیکت توسط ادمین مربوطه، پاسخ آن در پی‌وی شما فرستاده خواهد شد.");
-        botLog($botId, $userId, 'info', 'Support ticket recorded in database successfully.', ['ticket_id' => $newTicketId]);
+        $tg->sendMessage($userId, "✅ <b>تیکت شما با موفقیت ثبت شد.</b>\n\n📌 شماره تیکت: <code>#{$newTicketId}</code>\nپاسخ آن به زودی در پی‌وی شما ارسال می‌شود.");
     } catch (Exception $e) {
-        botLog($botId, $userId, 'error', 'Database insertion failed during support ticket submission.', ['error' => $e->getMessage()]);
-        $tg->sendMessage($userId, "❌ خطای سیستمی در ثبت تیکت رخ داد. لطفاً بعداً تلاش فرمایید.");
-        exit;
-    }
-
-    // اطلاع‌رسانی به ادمین هدف یا ادمین‌های واجد شرایط تیکتینگ ۲۲گانه جدید (perm_tickets_view)
-    $notifyAdmins = [];
-    if ($assignedAdminId) {
-        $notifyAdmins[] = $assignedAdminId;
-    } else {
-        $stmtAll = $db->prepare("
-            SELECT u.tg_id 
-            FROM users u
-            LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
-            WHERE u.bot_id = :bot_id 
-              AND u.status = 'approved'
-              AND (
-                  u.role = 'owner' 
-                  OR (u.role = 'admin' AND ap.perm_tickets_view = TRUE)
-              )
-        ");
-        $stmtAll->execute(['bot_id' => $botId]);
-        $allAdmins = $stmtAll->fetchAll();
-        foreach ($allAdmins as $ad) {
-            $notifyAdmins[] = $ad['tg_id'];
-        }
-    }
-
-    $adminAlert = "✉️ <b>تیکت پشتیبانی جدید دریافت شد! (#{$newTicketId})</b>\n\n"
-                . "👤 فرستنده: {$fullName} (@{$username})\n\n"
-                . "📝 متن تیکت:\n<i>{$text}</i>\n\n"
-                . "👉 ادمین گرامی، جهت پاسخ‌دهی به تیکت می‌توانید روی دکمه شیشه‌ای پاسخ زیر کلیک کنید:";
-
-    $keyboard = [
-        'inline_keyboard' => [
-            [['text' => '💬 پاسخ به تیکت', 'callback_data' => "admin_reply_ticket_{$newTicketId}"]]
-        ]
-    ];
-
-    foreach ($notifyAdmins as $admId) {
-        $tg->sendMessage($admId, $adminAlert, $keyboard);
+        $tg->sendMessage($userId, "❌ خطا در ثبت تیکت رخ داد.");
     }
     exit;
 }
 
-// ج) کاربر در حال آپلود پاسخ یک آزمون تمرینی/دلخواه است
+// د) کاربر در حال آپلود پاسخ یک آزمون تمرینی است
 elseif (strpos($step, 'user_waiting_exam_solve_') === 0) {
     $examId = (int)str_replace('user_waiting_exam_solve_', '', $step);
 
@@ -274,44 +324,33 @@ elseif (strpos($step, 'user_waiting_exam_solve_') === 0) {
     }
 
     if (!$fileId) {
-        botLog($botId, $userId, 'warning', 'User uploaded invalid file type for practice exam solve.', ['exam_id' => $examId]);
-        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً پاسخ آزمون تمرینی خود را فقط به صورت سند (Document) یا تصویر بفرستید:\n\n💡 جهت لغو، دستور <code>/cancel</code> را بفرستید.", [
-            'inline_keyboard' => [[['text' => '❌ لغو و بازگشت', 'callback_data' => 'user_cancel']]]
-        ]);
+        $tg->sendMessage($userId, "❌ <b>فایل نامعتبر است!</b>\n\nلطفاً پاسخ آزمون را به صورت سند یا تصویر بفرستید:");
         exit;
     }
 
-    botLog($botId, $userId, 'info', 'User uploaded practice exam solution.', ['exam_id' => $examId, 'file_id' => $fileId]);
-
-    $stmtE = $db->prepare("SELECT title, role FROM practice_exams WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+    $stmtE = $db->prepare("SELECT title FROM practice_exams WHERE bot_id = :bot_id AND id = :id LIMIT 1");
     $stmtE->execute(['bot_id' => $botId, 'id' => $examId]);
-    $exam = $stmtE->fetch();
-    $examTitle = $exam ? $exam['title'] : 'آزمون تمرینی';
+    $examTitle = $stmtE->fetch()['title'] ?? 'آزمون تمرینی';
 
     FSM::clearStep($botId, $userId);
-    $tg->sendMessage($userId, "✅ <b>پاسخ آزمون حل شده تمرینی شما با موفقیت برای ادمین‌های ارشد ارسال شد. خسته نباشید!</b>");
+    $tg->sendMessage($userId, "✅ <b>پاسخ آزمون حل شده تمرینی شما با موفقیت برای منتورها ارسال شد.</b>");
 
-    // هدایت خودکار پاسخ به ادمین‌های مجاز (دارای دسترسی perm_exams_manage)
+    // هدایت به ادمین‌های تیکتینگ ۲۲گانه (perm_exams_manage)
     $stmtAdmins = $db->prepare("
         SELECT u.tg_id 
         FROM users u
         LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
         WHERE u.bot_id = :bot_id 
           AND u.status = 'approved'
-          AND (
-              u.role = 'owner' 
-              OR (u.role = 'admin' AND ap.perm_exams_manage = TRUE)
-          )
+          AND (u.role = 'owner' OR (u.role = 'admin' AND ap.perm_exams_manage = TRUE))
     ");
     $stmtAdmins->execute(['bot_id' => $botId]);
     $adminsList = $stmtAdmins->fetchAll();
 
-    $roleName = getRoleFarsi($exam['role'] ?? 'none');
-    $adminAlert = "🏆 <b>یک پاسخ آزمون تمرینی جدید دریافت شد!</b>\n\n"
-                . "👤 داوطلب تمرین: {$fullName} (@{$username})\n"
-                . "📚 نام آزمون تمرینی: <b>«{$examTitle}»</b>\n"
-                . "⚔️ نقش مرتبط: <b>{$roleName}</b>\n\n"
-                . "👇 فایل پاسخ حل شده در زیر ضمیمه شده است:";
+    $adminAlert = "🏆 <b>پاسخ آزمون تمرینی جدید دریافت شد:</b>\n\n"
+                . "👤 کاربر: {$fullName} (@{$username})\n"
+                . "📚 آزمون: <b>«{$examTitle}»</b>\n\n"
+                . "👇 فایل پاسخ پیوست شده است:";
 
     foreach ($adminsList as $admin) {
         $tg->sendDocument($admin['tg_id'], $fileId, $adminAlert);
@@ -326,6 +365,73 @@ if ($message && $text === '/start') {
     botLog($botId, $userId, 'info', 'User triggered /start command.', ['membership_status' => $status]);
     FSM::clearStep($botId, $userId);
 
+    // بررسی اینکه آیا کاربر ورودی یک پارامتر دعوت هوشمند (invite_code) است
+    $startParam = null;
+    if (preg_match('/^\/start\s+invite_(.+)/', $message['text'], $matchInv)) {
+        $startParam = trim($matchInv[1]);
+    }
+
+    if ($startParam) {
+        // پایش و بررسی پویای لینک هوشمند استارت
+        $stmtLink = $db->prepare("SELECT * FROM bot_invite_links WHERE bot_id = :bot_id AND code = :code LIMIT 1");
+        $stmtLink->execute(['bot_id' => $botId, 'code' => $startParam]);
+        $linkRow = $stmtLink->fetch();
+
+        if (!$linkRow) {
+            $tg->sendMessage($userId, "❌ <b>لینک عضوگیری نامعتبر است یا منقضی شده است!</b>");
+            exit;
+        }
+
+        // بررسی زمان انقضای لینک
+        if (strtotime($linkRow['expire_at']) < time()) {
+            $tg->sendMessage($userId, "❌ <b>مهلت زمانی این لینک عضوگیری به پایان رسیده است!</b>");
+            exit;
+        }
+
+        // بررسی محدودیت ظرفیت تعداد دفعات استفاده از لینک
+        if ($linkRow['uses'] >= $linkRow['max_uses']) {
+            $tg->sendMessage($userId, "❌ <b>ظرفیت پذیرش این لینک تکمیل شده است!</b>");
+            exit;
+        }
+
+        // بررسی اینکه کاربر در حال حاضر تایید شده نباشد
+        if ($status === 'approved') {
+            $tg->sendMessage($userId, "⚠️ شما در حال حاضر عضو تایید شده تیم هستید و نیازی به استفاده از این لینک ندارید.");
+            exit;
+        }
+
+        // افزایش تعداد دفعات استفاده از لینک
+        $stmtInc = $db->prepare("UPDATE bot_invite_links SET uses = uses + 1 WHERE id = :id");
+        $stmtInc->execute(['id' => $linkRow['id']]);
+
+        if ($linkRow['is_locked'] == 0) {
+            // عضویت مستقیم و بدون قفل
+            FSM::setStatus($botId, $userId, 'approved');
+            FSM::setRole($botId, $userId, 'translator'); // نقش دیفالت
+            
+            $tg->sendMessage($userId, "✅ <b>عضویت فوری شما تایید شد!</b>\n\nشما با موفقیت به دیتابیس تیم مانهوا ملحق شدید. دستور <code>/start</code> را بفرستید تا پنل شما فعال شود.");
+        } else {
+            // عضوگیری قفل‌دار (نیاز به تعیین نقش توسط کاربر و تایید نهایی ادمین)
+            FSM::setStatus($botId, $userId, 'pending_test');
+            FSM::setStep($botId, $userId, "waiting_test_translator"); // موقت تا انتخاب کند
+            
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => '📝 مترجم', 'callback_data' => "user_role_translator"],
+                        ['text' => '🖌 کلینر', 'callback_data' => "user_role_cleaner"]
+                    ],
+                    [
+                        ['text' => '⌨️ تایپیست', 'callback_data' => "user_role_typesetter"]
+                    ]
+                ]
+            ];
+            $tg->sendMessage($userId, "🤝 <b>به عضوگیری قفل‌دار خوش آمدید.</b>\n\nلطفاً نقش مورد نظر خود را انتخاب کنید تا مشخصات شما جهت تایید فوری برای مدیریت فرستاده شود:", $keyboard);
+        }
+        exit;
+    }
+
+    // حالت منوی عادی شروع
     if ($status === 'approved') {
         $keyboard = [
             'inline_keyboard' => [
@@ -336,35 +442,45 @@ if ($message && $text === '/start') {
                 [
                     ['text' => '🏆 آزمون‌های تمرینی', 'callback_data' => 'user_practice_exams'],
                     ['text' => '✉️ تیکت پشتیبانی ادمین', 'callback_data' => 'usr_tickets_p_1']
+                ],
+                [
+                    ['text' => '❓ سوالات متداول (FAQ)', 'callback_data' => 'user_sys_faq_list_1']
                 ]
             ]
         ];
+
+        // در صورت ادمین یا مالک بودن، دکمه سوئیچ را اضافه می‌کنیم
+        $isAdmin = ($user['role'] === 'owner' || strpos($user['role'], 'admin') !== false);
+        if ($isAdmin) {
+            $keyboard[] = [['text' => '🛡️ پنل ادمین', 'callback_data' => 'admin_sys_mode_admin']];
+        }
         
         $roleFarsi = getRoleFarsi($role);
-        $tg->sendMessage($userId, "👋 سلام <b>{$fullName}</b> عزیز، خوش آمدید.\n\nنقش شما در تیم: <b>{$roleFarsi}</b>\n\nلطفاً یکی از گزینه‌های پنل شیشه‌ای زیر را انتخاب کنید:", $keyboard);
+        $tg->sendMessage($userId, "👋 سلام <b>{$fullName}</b> عزیز، خوش آمدید.\n\nنقش شما در تیم: <b>{$roleFarsi}</b>\n\nلطفاً یکی از گزینه‌های زیر را انتخاب کنید:", $keyboard);
     } else {
+        // داوطلب جدید (Guest)
         $keyboard = [
             'inline_keyboard' => [
                 [['text' => '🤝 عضویت در تیم مانهوا', 'callback_data' => 'join_team']]
             ]
         ];
         
-        $tg->sendMessage($userId, "👋 سلام <b>{$fullName}</b> گرامی!\n\nبه ربات رسمی مدیریت تیم مانهوا خوش آمدید.\n\nآیا مایل هستید جهت ترجمه، تایپ یا کلین مانهواها به تیم ما بپیوندید؟ لطفاً دکمه زیر را لمس کنید:", $keyboard);
+        $tg->sendMessage($userId, "👋 سلام <b>{$fullName}</b> گرامی!\n\nبه ربات رسمی مدیریت تیم مانهوا خوش آمدید. برای شروع عضویت دکمه زیر را لمس کنید:", $keyboard);
     }
     exit;
 }
 
 // ==========================================
-// بخش ۴: پردازش کلیک روی دکمه‌های شیشه‌ای (Callback Queries)
+// بخش ۴: پردازش رویدادهای کالبک شیشه‌ای (Callbacks)
 // ==========================================
 if ($callbackQuery) {
     $callbackData = $callbackQuery['data'];
 
     botLog($botId, $userId, 'info', 'User clicked inline button.', ['callback_data' => $callbackData]);
 
-    // ۱. درخواست شروع استخدام داوطلب جدید
     if ($callbackData === 'join_team') {
         $tg->answerCallbackQuery($callbackId);
+        
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -381,7 +497,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۲. انتخاب حوزه فعالیت توسط داوطلب
     elseif (strpos($callbackData, 'user_role_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $selectedRole = str_replace('user_role_', '', $callbackData);
@@ -393,11 +508,10 @@ if ($callbackQuery) {
         ];
         
         $roleFarsi = getRoleFarsi($selectedRole);
-        $tg->sendMessage($userId, "شما حوزه <b>{$roleFarsi}</b> را انتخاب کردید.\n\nبرای شروع فرآیند استخدام و دانلود فایل تست، لطفاً دکمه زیر را فشار دهید:", $keyboard);
+        $tg->sendMessage($userId, "شما حوزه <b>{$roleFarsi}</b> را انتخاب کردید.\n\nبرای شروع فرآیند استخدام و دانلود فایل تست، روی دکمه زیر فشار دهید:", $keyboard);
         exit;
     }
 
-    // ۳. ارسال فایل تست خام استخدامی
     elseif (strpos($callbackData, 'get_test_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $testRole = str_replace('get_test_', '', $callbackData);
@@ -410,8 +524,7 @@ if ($callbackQuery) {
         $template = $stmt->fetch();
 
         if (!$template || empty($template['file_id'])) {
-            botLog($botId, $userId, 'warning', 'No recruitment test file found in database for role.', ['role' => $testRole]);
-            $tg->sendMessage($userId, "⚠️ متاسفانه در حال حاضر تستی برای این نقش توسط ادمین‌های ربات آپلود نشده است. لطفاً بعداً تلاش کرده یا با ادمین در ارتباط باشید.");
+            $tg->sendMessage($userId, "⚠️ متاسفانه در حال حاضر تستی برای این نقش توسط ادمین‌های ربات آپلود نشده است.");
             exit;
         }
 
@@ -425,7 +538,7 @@ if ($callbackQuery) {
         if (!empty($template['instructions'])) {
             $captionText .= "⚠️ <b>دستورالعمل تست:</b>\n<i>{$template['instructions']}</i>\n\n";
         }
-        $captionText .= "لطفاً فایل را دانلود و حل کنید. پس از پایان کار، دکمه زیر را فشار داده و نسخه نهایی را بفرستید:";
+        $captionText .= "لطفاً فایل را حل کرده و بفرستید:";
 
         $rawFileId = $template['file_id'];
         $fileType  = 'doc';
@@ -437,8 +550,6 @@ if ($callbackQuery) {
             $cleanFileId = $parts[1];
         }
 
-        botLog($botId, $userId, 'info', 'Sending recruitment test file.', ['file_id' => $cleanFileId, 'type' => $fileType]);
-
         if ($fileType === 'photo') {
             $tg->sendPhoto($userId, $cleanFileId, $captionText, $keyboard);
         } else {
@@ -447,24 +558,22 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۴. تغییر مرحله FSM جهت دریافت تست حل شده داوطلب
     elseif (strpos($callbackData, 'prepare_submit_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $testRole = str_replace('prepare_submit_', '', $callbackData);
 
-        FSM::setStep($botId, $userId, "waiting_test_{$testRole}");
-        
-        $keyboard = [
-            'inline_keyboard' => [
-                [['text' => '❌ انصراف و لغو', 'callback_data' => 'user_cancel']]
-            ]
-        ];
-
-        $tg->sendMessage($userId, "📥 <b>بستر دریافت فایل فعال شد.</b>\n\nلطفاً پاسخ تست حل شده خود را به صورت سند (Document) یا تصویر بفرستید:", $keyboard);
+        if ($status === 'approved') {
+            // فرآیند چندشغله شدن - تست مجدد
+            FSM::setStep($botId, $userId, "user_waiting_retest_{$testRole}");
+            $tg->sendMessage($userId, "📥 <b>بستر تست مجدد برای پرسنل فعال شد:</b>\n\nلطفاً فایل تست حل شده خود را جهت اخذ سمت دوم <b>«" . getRoleFarsi($testRole) . "»</b> ارسال کنید:");
+        } else {
+            // فرآیند استخدام عادی داوطلب جدید
+            FSM::setStep($botId, $userId, "waiting_test_{$testRole}");
+            $tg->sendMessage($userId, "📥 <b>بستر دریافت فایل تست فعال شد:</b>\n\nلطفاً پاسخ تست حل شده را به صورت سند یا تصویر بفرستید:");
+        }
         exit;
     }
 
-    // ۵. دکمه میزان حقوق (مخصوص اعضای تایید شده)
     elseif ($callbackData === 'member_salary') {
         $tg->answerCallbackQuery($callbackId);
         $earned  = number_format($user['total_earned'] ?? 0);
@@ -475,7 +584,7 @@ if ($callbackQuery) {
                     . "💸 کل حقوق ثبت شده شما: <code>{$earned}</code> تومان\n"
                     . "🔢 مجموع چپترهای انجام شده: <code>{$totalCh}</code> چپتر\n"
                     . "📅 چپترهای ثبت شده این ماه: <code>{$monthCh}</code> چپتر\n\n"
-                    . "ℹ️ حقوق شما با تایید هر چپتر ارسالی در گروه‌های مانهوا توسط ادمین، بلافاصله آپدیت می‌شود.";
+                    . "ℹ️ حقوق شما پس از تایید نهایی کارها توسط مدیریت فوراً افزایش می‌یابد.";
 
         $keyboard = [
             'inline_keyboard' => [
@@ -487,7 +596,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۶. دکمه کارها و مانهواهای منتسب شده به کاربر (مخصوص اعضا)
     elseif ($callbackData === 'member_tasks') {
         $tg->answerCallbackQuery($callbackId);
         $stmt = $db->prepare("
@@ -503,13 +611,11 @@ if ($callbackQuery) {
         $tasks = $stmt->fetchAll();
 
         if (empty($tasks)) {
-            $tg->sendMessage($userId, "⚠️ شما در حال حاضر روی هیچ پروژه فعالی از مانهواها ست نشده‌اید.", [
-                'inline_keyboard' => [
-                    [['text' => '🔙 بازگشت', 'callback_data' => 'member_back_to_menu']]
-                ]
+            $tg->sendMessage($userId, "⚠️ شما در حال حاضر روی هیچ پروژه فعال مانهوایی قرار نگرفته‌اید.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'member_back_to_menu']]]
             ]);
         } else {
-            $textTasks = "📚 <b>لیست پروژه‌های در دست اقدام شما:</b>\n\nجهت مشاهده جزئیات، شناسنامه مانهوا و آخرین وضعیت، روی مانهوا کلیک کنید:";
+            $textTasks = "📚 <b>لیست پروژه‌های در دست اقدام شما:</b>\n\nجهت مشاهده جزئیات، روی مانهوا کلیک کنید:";
             $buttons = [];
             foreach ($tasks as $task) {
                 $buttons[] = [['text' => "📚 " . $task['title'], 'callback_data' => "view_task_" . $task['id']]];
@@ -521,7 +627,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۷. مشاهده شناسنامه و کاور مانهواهای انتسابی
     elseif (strpos($callbackData, 'view_task_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $manhwaId = (int)str_replace('view_task_', '', $callbackData);
@@ -550,15 +655,23 @@ if ($callbackQuery) {
             } else {
                 $tg->sendMessage($userId, $caption, $keyboard);
             }
-        } else {
-            $tg->sendMessage($userId, "❌ مانهوای انتخابی یافت نشد.");
         }
         exit;
     }
 
-    // ۸. تیکت‌های پشتیبانی با ورق‌زن ده تایی داینامیک سمت کاربر
+    // تیکت‌های پشتیبانی و تیکتینگ کاری
     elseif (strpos($callbackData, 'usr_tickets_p_') === 0) {
         $tg->answerCallbackQuery($callbackId);
+        
+        // ۱. بررسی ساعت و روز کاری قبل از هر اقدام تیکتینگ
+        $timeCheck = checkTicketWorkingTime($db, $botId);
+        if (!$timeCheck['allowed']) {
+            $tg->sendMessage($userId, $timeCheck['reason'], [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به منو', 'callback_data' => 'member_back_to_menu']]]
+            ]);
+            exit;
+        }
+
         $page = (int)str_replace('usr_tickets_p_', '', $callbackData);
         $limit = 10;
         $offset = ($page - 1) * $limit;
@@ -566,7 +679,7 @@ if ($callbackQuery) {
         $stmtCount = $db->prepare("SELECT COUNT(*) as total FROM tickets WHERE bot_id = :bot_id AND user_id = :u_id");
         $stmtCount->execute(['bot_id' => $botId, 'u_id' => $userId]);
         $total = $stmtCount->fetch()['total'];
-        $totalPages = ceil($total / $limit);
+        $totalPages = max(1, ceil($total / $limit));
 
         $stmt = $db->prepare("SELECT id, subject, status FROM tickets WHERE bot_id = :bot_id AND user_id = :u_id ORDER BY id DESC LIMIT :limit OFFSET :offset");
         $stmt->bindValue(':bot_id', $botId, PDO::PARAM_INT);
@@ -576,9 +689,9 @@ if ($callbackQuery) {
         $stmt->execute();
         $tickets = $stmt->fetchAll();
 
-        $textList = "✉️ <b>لیست تیکت‌های پشتیبانی شما (صفحه {$page} از {$totalPages}):</b>\n\nجهت ایجاد تیکت جدید یا پیگیری تیکت‌ها از گزینه‌های زیر استفاده کنید:";
+        $textList = "✉️ <b>لیست تیکت‌های پشتیبانی شما (صفحه {$page} از {$totalPages}):</b>\n\nبرای ثبت تیکت جدید یا پیگیری از گزینه‌های زیر اقدام کنید:";
         $buttons = [];
-        $buttons[] = [['text' => '➕ ثبت تیکت جدید', 'callback_data' => 'user_open_ticket']];
+        $buttons[] = [['text' => '➕ ثبت تیکت پشتیبانی جدید', 'callback_data' => 'user_open_ticket']];
 
         foreach ($tickets as $t) {
             $statusIcon = $t['status'] === 'closed' ? '✅ بسته‌شده' : '⏳ باز';
@@ -605,7 +718,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۹. مشاهده تیکت توسط کاربر عادی
     elseif (strpos($callbackData, 'usr_t_view_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $ticketId = (int)str_replace('usr_t_view_', '', $callbackData);
@@ -635,56 +747,147 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ۱۰. منوی دکمه شیشه‌ای شروع ارسال تیکت پشتیبانی
     elseif ($callbackData === 'user_open_ticket') {
         $tg->answerCallbackQuery($callbackId);
         
-        // واکشی ادمین‌های مجاز تیکتینگ ۲۲گانه جدید (perm_tickets_view) جهت واگذاری تیکت
+        $timeCheck = checkTicketWorkingTime($db, $botId);
+        if (!$timeCheck['allowed']) {
+            $tg->sendMessage($userId, $timeCheck['reason'], [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به منو', 'callback_data' => 'member_back_to_menu']]]
+            ]);
+            exit;
+        }
+
+        // واکشی ادمین‌های لایو (مخفی نشده‌ها) جهت نمایش در لیست انتخاب اختصاصی
         $stmtAdmins = $db->prepare("
             SELECT u.tg_id, u.full_name 
             FROM users u
             LEFT JOIN admin_permissions ap ON u.bot_id = ap.bot_id AND u.tg_id = ap.user_id
             WHERE u.bot_id = :bot_id 
               AND u.status = 'approved'
-              AND (
-                  u.role = 'owner' 
-                  OR (u.role = 'admin' AND ap.perm_tickets_view = TRUE)
-              )
+              AND (u.role = 'owner' OR (u.role = 'admin' AND ap.perm_tickets_view = TRUE))
         ");
         $stmtAdmins->execute(['bot_id' => $botId]);
         $admins = $stmtAdmins->fetchAll();
 
         $buttons = [];
-        $buttons[] = [['text' => '👥 تیکت عمومی (به کل مدیریت تیم)', 'callback_data' => 'user_send_ticket_general']];
+        $buttons[] = [['text' => '👥 تیکت عمومی (به کل ادمین‌ها)', 'callback_data' => 'user_send_ticket_general']];
         
         foreach ($admins as $ad) {
-            $buttons[] = [['text' => "👤 ادمین اختصاصی: {$ad['full_name']}", 'callback_data' => "user_send_ticket_to_{$ad['tg_id']}"]];
-        }
-        $buttons[] = [['text' => '🔙 بازگشت', 'callback_data' => 'member_back_to_menu']];
+            // چک کردن اینکه آیا ادمین مخفی است یا خیر
+            $stmtHide = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = :key LIMIT 1");
+            $stmtHide->execute(['bot_id' => $botId, 'key' => "hide_admin_{$ad['tg_id']}"]);
+            $hideRow = $stmtHide->fetch();
+            $isHidden = $hideRow ? (int)$hideRow['value'] : 0;
 
-        $tg->sendMessage($userId, "✉️ <b>بخش تیکتینگ مانهوا:</b>\n\nمشخص کنید تمایل دارید تیکت شما به صورت عمومی ارسال شود یا به پی‌وی یک ادمین مشخص برود:", ['inline_keyboard' => $buttons]);
+            if ($isHidden === 1) {
+                continue; // عدم نمایش ادمین مخفی شده در پنل کاربر عادی
+            }
+
+            // چک کردن نام نمایشی اختصاصی
+            $stmtDisp = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = :key LIMIT 1");
+            $stmtDisp->execute(['bot_id' => $botId, 'key' => "display_name_admin_{$ad['tg_id']}"]);
+            $dispRow = $stmtDisp->fetch();
+            $displayName = $dispRow ? $dispRow['value'] : $ad['full_name'];
+
+            $buttons[] = [['text' => "👤 ادمین: {$displayName}", 'callback_data' => "user_send_ticket_to_{$ad['tg_id']}"]];
+        }
+        $buttons[] = [['text' => '🔙 بازگشت', 'callback_data' => 'usr_tickets_p_1']];
+
+        $tg->sendMessage($userId, "✉️ <b>ارسال تیکت جدید:</b>\n\nمشخص کنید تمایل دارید تیکت شما به صورت عمومی ارسال شود یا مستقیماً به یک ادمین مشخص ارجاع داده شود:", ['inline_keyboard' => $buttons]);
         exit;
     }
 
-    // تغییر وضعیت FSM جهت دریافت تیکت پشتیبانی
     elseif (strpos($callbackData, 'user_send_ticket_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $targetAdmin = str_replace('user_send_ticket_', '', $callbackData);
         $adminId = ($targetAdmin === 'general') ? 'null' : (int)str_replace('to_', '', $targetAdmin);
 
+        $timeCheck = checkTicketWorkingTime($db, $botId);
+        if (!$timeCheck['allowed']) {
+            $tg->sendMessage($userId, $timeCheck['reason']);
+            exit;
+        }
+
         FSM::setStep($botId, $userId, "user_typing_ticket_{$adminId}");
 
         $keyboard = [
             'inline_keyboard' => [
-                [['text' => '❌ انصراف و لغو تیکت', 'callback_data' => 'user_cancel']]
+                [['text' => '❌ انصراف و لغو', 'callback_data' => 'user_cancel']]
             ]
         ];
 
-        $tg->sendMessage($userId, "✍️ <b>لطفاً موضوع یا متن تیکت پشتیبانی خود را بنویسید و ارسال کنید:</b>", $keyboard);
+        $tg->sendMessage($userId, "✍️ <b>لطفاً موضوع و متن مشکل خود را تایپ و ارسال کنید:</b>", $keyboard);
         exit;
     }
 
-    // ۱۱. منوی آزمون‌های تمرینی/دلخواه
+    // آرشیو سوالات متداول (FAQ Module for Members)
+    elseif (strpos($callbackData, 'user_sys_faq_list_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $page = (int)str_replace('user_sys_faq_list_', '', $callbackData);
+        $limit = 5;
+        $offset = ($page - 1) * $limit;
+
+        $stmtCount = $db->prepare("SELECT COUNT(*) as total FROM faq WHERE bot_id = :bot_id");
+        $stmtCount->execute(['bot_id' => $botId]);
+        $total = $stmtCount->fetch()['total'];
+        $totalPages = max(1, ceil($total / $limit));
+
+        $stmt = $db->prepare("SELECT id, title FROM faq WHERE bot_id = :bot_id ORDER BY id DESC LIMIT :limit OFFSET :offset");
+        $stmt->bindValue(':bot_id', $botId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        $faqs = $stmt->fetchAll();
+
+        if (empty($faqs)) {
+            $tg->sendMessage($userId, "⚠️ در حال حاضر هیچ سوال متداولی در دیتابیس ثبت نشده است.", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'member_back_to_menu']]]
+            ]);
+            exit;
+        }
+
+        $buttons = [];
+        foreach ($faqs as $f) {
+            $buttons[] = [['text' => "❓ " . $f['title'], 'callback_data' => "user_sys_faq_view_{$f['id']}"]];
+        }
+
+        $navButtons = [];
+        if ($page > 1) {
+            $navButtons[] = ['text' => '◀️ قبلی', 'callback_data' => "user_sys_faq_list_" . ($page - 1)];
+        }
+        if ($page < $totalPages) {
+            $navButtons[] = ['text' => 'بعدی ▶️', 'callback_data' => "user_sys_faq_list_" . ($page + 1)];
+        }
+        if (!empty($navButtons)) {
+            $buttons[] = $navButtons;
+        }
+        $buttons[] = [['text' => '🔙 بازگشت به منو اصلی', 'callback_data' => 'member_back_to_menu']];
+
+        $tg->sendMessage($userId, "❓ <b>راهنما و سوالات متداول پرسنل (صفحه {$page} از {$totalPages}):</b>\n\nبرای دیدن پاسخ هر سوال روی آن کلیک کنید:", ['inline_keyboard' => $buttons]);
+        exit;
+    }
+
+    elseif (strpos($callbackData, 'user_sys_faq_view_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $faqId = (int)str_replace('user_sys_faq_view_', '', $callbackData);
+
+        $stmt = $db->prepare("SELECT * FROM faq WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+        $stmt->execute(['bot_id' => $botId, 'id' => $faqId]);
+        $faq = $stmt->fetch();
+
+        if ($faq) {
+            $textMsg = "❓ <b>سوال متداول: {$faq['title']}</b>\n\n"
+                     . "💬 <b>پاسخ مدیریت:</b>\n<i>{$faq['content']}</i>";
+
+            $tg->sendMessage($userId, $textMsg, [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت به لیست سوالات', 'callback_data' => 'user_sys_faq_list_1']]]
+            ]);
+        }
+        exit;
+    }
+
+    // آزمون‌های تمرینی/دلخواه
     elseif ($callbackData === 'user_practice_exams') {
         $tg->answerCallbackQuery($callbackId);
         $keyboard = [
@@ -696,14 +899,42 @@ if ($callbackQuery) {
                 [
                     ['text' => '⌨️ آزمون‌های تایپیست', 'callback_data' => 'user_view_exams_typesetter']
                 ],
+                [
+                    ['text' => '🎯 تست برای نقش جدید (چندشغله شدن)', 'callback_data' => 'user_retest_start']
+                ],
                 [['text' => '🔙 بازگشت به منو', 'callback_data' => 'member_back_to_menu']]
             ]
         ];
-        $tg->sendMessage($userId, "🏆 <b>بخش آزمون‌های تمرینی و دلخواه مانهوا:</b>\n\nبرای دیدن آرشیو سوالات و سوال‌های تمرینی آپلود شده توسط منتورها، نقش خود را انتخاب کنید:", $keyboard);
+        $tg->sendMessage($userId, "🏆 <b>بخش آزمون‌های تمرینی و دلخواه مانهوا:</b>\n\nبرای دریافت فایل آزمون و یادگیری استانداردهای جدید، نقش خود را انتخاب کنید:", $keyboard);
         exit;
     }
 
-    // نمایش آرشیو آزمون‌های تمرینی بر اساس نقش انتخابی
+    // تست مجدد برای اخذ سمت دوم (پرسنل رسمی)
+    elseif ($callbackData === 'user_retest_start') {
+        $tg->answerCallbackQuery($callbackId);
+        
+        // استخراج نقش‌هایی که کاربر در حال حاضر ندارد
+        $currentRoles = explode(',', $user['role']);
+        $allRoles = ['translator' => 'مترجم', 'cleaner' => 'کلینر', 'typesetter' => 'تایپیست'];
+
+        $buttons = [];
+        foreach ($allRoles as $roleSlug => $roleFarsi) {
+            if (!in_array($roleSlug, $currentRoles)) {
+                $buttons[] = [['text' => "📥 دریافت تست نقش «{$roleFarsi}»", 'callback_data' => "get_test_{$roleSlug}"]];
+            }
+        }
+
+        if (empty($buttons)) {
+            $tg->sendMessage($userId, "⚠️ شما در حال حاضر تمام نقش‌های فنی (مترجم، کلینر و تایپیست) را در پروفایل خود دارید!", [
+                'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'user_practice_exams']]]
+            ]);
+        } else {
+            $buttons[] = [['text' => '🔙 بازگشت', 'callback_data' => 'user_practice_exams']];
+            $tg->sendMessage($userId, "🎯 <b>سیستم چندشغله شدن پرسنل:</b>\n\nشما می‌توانید با دانلود و حل فایل تست نقش‌های دیگر، سمت جدیدی دریافت کنید و مبالغ تراکنش‌های مانهوا را تجمعی واریز بگیرید. نقش مورد نظر را لمس کنید:", ['inline_keyboard' => $buttons]);
+        }
+        exit;
+    }
+
     elseif (strpos($callbackData, 'user_view_exams_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $targetRole = str_replace('user_view_exams_', '', $callbackData);
@@ -713,11 +944,11 @@ if ($callbackQuery) {
         $exams = $stmt->fetchAll();
 
         if (empty($exams)) {
-            $tg->sendMessage($userId, "⚠️ در حال حاضر هیچ آزمون یا پروژه تمرینی برای نقش " . getRoleFarsi($targetRole) . " ثبت نشده است.", [
+            $tg->sendMessage($userId, "⚠️ در حال حاضر هیچ آزمون یا پروژه تمرینی برای این نقش ثبت نشده است.", [
                 'inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'user_practice_exams']]]
             ]);
         } else {
-            $textList = "🏆 <b>آزمون‌های تمرینی فعال برای " . getRoleFarsi($targetRole) . " :</b>\n\nجهت دریافت فایل آزمون و شروع کلیک کنید:";
+            $textList = "🏆 <b>آزمون‌های تمرینی فعال برای " . getRoleFarsi($targetRole) . " :</b>";
             $buttons = [];
             foreach ($exams as $ex) {
                 $buttons[] = [['text' => "📝 " . $ex['title'], 'callback_data' => "user_download_exam_{$ex['id']}"]];
@@ -729,7 +960,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // دانلود آزمون تمرینی انتخابی
     elseif (strpos($callbackData, 'user_download_exam_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $examId = (int)str_replace('user_download_exam_', '', $callbackData);
@@ -750,8 +980,7 @@ if ($callbackQuery) {
             ];
 
             $caption = "🏆 <b>نام آزمون: «{$exam['title']}»</b>\n\n"
-                     . "ℹ️ این آزمون به صورت دلخواه و جهت ارتقای کارایی شما در تیم مانهوا قرار گرفته است.\n\n"
-                     . "پس از حل کردن سوال، دکمه زیر را فشار داده و نسخه نهایی را جهت ارزیابی منتورها بفرستید:";
+                     . "پس از حل کردن سوال، دکمه زیر را فشار داده و نسخه نهایی را بفرستید:";
 
             $rawFileId   = $exam['file_id'];
             $fileType    = 'doc';
@@ -762,8 +991,6 @@ if ($callbackQuery) {
                 $fileType    = $parts[0];
                 $cleanFileId = $parts[1];
             }
-
-            botLog($botId, $userId, 'info', 'Sending practice exam file.', ['file_id' => $cleanFileId, 'type' => $fileType]);
 
             if ($fileType === 'photo') {
                 $tg->sendPhoto($userId, $cleanFileId, $caption, $keyboard);
@@ -776,7 +1003,6 @@ if ($callbackQuery) {
         exit;
     }
 
-    // ورود به مرحله FSM دریافت فایل آزمون تمرینی حل شده
     elseif (strpos($callbackData, 'user_submit_exam_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $examId = (int)str_replace('user_submit_exam_', '', $callbackData);
@@ -789,11 +1015,10 @@ if ($callbackQuery) {
             ]
         ];
 
-        $tg->sendMessage($userId, "📥 <b>بستر دریافت آزمون تمرینی حل شده فعال شد.</b>\n\nلطفاً پاسخ آزمون را به صورت سند (Document) یا تصویر معمولی ارسال فرمایید:", $keyboard);
+        $tg->sendMessage($userId, "📥 <b>بستر دریافت فایل پاسخ فعال شد:</b>\n\nلطفاً پاسخ آزمون تمرینی را به صورت سند یا تصویر ارسال فرمایید:", $keyboard);
         exit;
     }
 
-    // بازگشت به منوی اصلی اعضا
     elseif ($callbackData === 'member_back_to_menu') {
         $tg->answerCallbackQuery($callbackId);
         FSM::clearStep($botId, $userId);
@@ -807,9 +1032,18 @@ if ($callbackQuery) {
                 [
                     ['text' => '🏆 آزمون‌های تمرینی', 'callback_data' => 'user_practice_exams'],
                     ['text' => '✉️ تیکت پشتیبانی ادمین', 'callback_data' => 'usr_tickets_p_1']
+                ],
+                [
+                    ['text' => '❓ سوالات متداول (FAQ)', 'callback_data' => 'user_sys_faq_list_1']
                 ]
             ]
         ];
+
+        // سوئیچ مجدد به پنل مدیریت برای ادمین‌ها
+        $isAdmin = ($user['role'] === 'owner' || strpos($user['role'], 'admin') !== false);
+        if ($isAdmin) {
+            $keyboard[] = [['text' => '🛡️ پنل ادمین', 'callback_data' => 'admin_sys_mode_admin']];
+        }
         
         $tg->sendMessage($userId, "👋 منوی اعضا\n\nلطفاً گزینه مورد نظر خود را انتخاب کنید:", $keyboard);
         exit;
