@@ -57,6 +57,25 @@ if ($isGroup) {
     // پیام در پی‌وی (چت شخصی) ربات فرستاده شده است
     $isAdmin = ($user['role'] === 'owner' || $user['role'] === 'admin');
 
+    // ==========================================
+    // بررسی خاموش بودن ربات برای کاربران عادی
+    // ==========================================
+    if (!$isAdmin) {
+        $stmtStatus = $db->prepare("SELECT value FROM settings WHERE bot_id = :bot_id AND key = 'bot_active_status' LIMIT 1");
+        $stmtStatus->execute(['bot_id' => $botId]);
+        $rowStatus = $stmtStatus->fetch();
+        $botActive = $rowStatus ? $rowStatus['value'] : 'on';
+
+        if ($botActive === 'off') {
+            if ($callbackQuery) {
+                $tg->answerCallbackQuery($callbackQuery['id'], "❌ ربات موقتاً توسط مدیریت خاموش شده است.", true);
+            } else {
+                $tg->sendMessage($userId, "❌ <b>ربات به دلیل به‌روزرسانی یا تعمیرات موقتاً توسط مدیریت خاموش شده است.</b>\n\nلطفاً بعداً مراجعه کنید.");
+            }
+            exit;
+        }
+    }
+
     if ($isAdmin) {
         // بررسی چندشغله بودن ادمین (آیا ادمین همزمان نقش فنی مترجم، کلینر یا تایپیست هم دارد؟)
         $rolesList = explode(',', $user['role']);
@@ -145,7 +164,9 @@ if ($isGroup) {
                 'admin_mng_gift_', 'admin_projects_page_', 'admin_project_search_init', 
                 'admin_view_manhwa_', 'admin_mng_status_', 'admin_dismiss_list_', 
                 'admin_dismiss_', 'admin_assign_', 'admin_usr_ban_', 'admin_usr_confirmban_',
-                'admin_usr_warn_', 'admin_usr_dm_'
+                'admin_usr_warn_', 'admin_usr_dm_', 'admin_most_active', 'admin_team_info',
+                'admin_manage_exams_page_', 'admin_ex_del_', 'admin_ex_edit_', 
+                'admin_add_practice_exam', 'admin_select_exam_role_'
             ];
 
             foreach ($mngPrefixes as $pref) {
@@ -165,7 +186,7 @@ if ($isGroup) {
                 'admin_waiting_manual_', 'admin_waiting_assign_', 'admin_waiting_m_rate_', 
                 'admin_waiting_warn_reason_', 'admin_waiting_dm_text_', 'admin_waiting_mng_note_', 
                 'admin_waiting_mng_rating_', 'admin_waiting_mng_gift_', 'admin_waiting_mng_raw_upload_', 
-                'admin_waiting_mng_invite_'
+                'admin_waiting_mng_invite_', 'admin_waiting_exam_file', 'admin_waiting_exam_title_'
             ];
 
             foreach ($mngFsmPrefixes as $fsmPref) {
