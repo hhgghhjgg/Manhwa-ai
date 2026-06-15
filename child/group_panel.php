@@ -2,7 +2,7 @@
 /**
  * Project: Manhwa Team Telegram Bot Maker (Multi-Tenant Engine)
  * File: child/group_panel.php
- * Role: Group Command Processor with Dual Mode, Silence, Warn, & Collision-Free Team Assignments
+ * Role: Group Command Processor with Dual Mode, Silence, Warn, & Dynamic Raw Chapter Browser
  */
 
 // اطمینان از صحت متغیرها و کانتکست لود شده
@@ -208,6 +208,29 @@ elseif (strpos($userStep, 'group_waiting_rule_desc_') === 0 && $isAdminInGroup) 
     exit;
 }
 
+// و) جستجوی چپتر خام از آرشیو با استپ متنی FSM
+elseif ($userStep === 'grp_waiting_ch_search') {
+    FSM::clearStep($botId, $userId);
+    
+    $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
+    $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
+    $manhwa = $stmtM->fetch();
+
+    if ($manhwa) {
+        $stmtRaw = $db->prepare("SELECT file_id, file_name FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id AND chapter_num = :ch_num LIMIT 1");
+        $stmtRaw->execute(['bot_id' => $botId, 'm_id' => $manhwa['id'], 'ch_num' => (int)$text]);
+        $raw = $stmtRaw->fetch();
+
+        if ($raw) {
+            $caption = "📁 <b>فایل خام چپتر {$text} مانهوای «{$manhwa['title']}»</b>";
+            $tg->sendDocument($chatId, $raw['file_id'], $caption);
+        } else {
+            $tg->sendMessage($chatId, "❌ چپتر خام شماره <code>{$text}</code> برای این مانهوا یافت نشد.");
+        }
+    }
+    exit;
+}
+
 // ==========================================
 // فاز ۲: پردازش دکمه‌های شیشه‌ای درون گروهی (Callback Queries)
 // ==========================================
@@ -215,7 +238,6 @@ if ($callbackQuery && $callbackData) {
 
     if ($callbackData === 'grp_cancel') {
         $tg->answerCallbackQuery($callbackId);
-        if (!$isAdminInGroup) exit;
         FSM::clearStep($botId, $userId);
         $tg->deleteMessage($chatId, $messageId);
         exit;
@@ -310,7 +332,7 @@ if ($callbackQuery && $callbackData) {
         FSM::setStep($botId, $userId, "group_waiting_rate_{$roleToUpdate}");
         $roleFarsi = ($roleToUpdate === 'translator') ? 'مترجم' : (($roleToUpdate === 'cleaner') ? 'کلینر' : 'تایپیست');
 
-        $tg->sendMessage($chatId, "💸 لطفاً مبلغ دستمزد اختصاصی جدید نقش <b>«{$roleFarsi}»</b> را به عدد (به تومان) وارد کنید:", [
+        $tg->sendMessage($chatId, "💸 لطفاً دستمزد اختصاصی جدید نقش <b>«{$roleFarsi}»</b> را به عدد (به تومان) وارد کنید:", [
             'reply_to_message_id' => $messageId
         ]);
         exit;
@@ -339,7 +361,7 @@ if ($callbackQuery && $callbackData) {
         $stmtCount = $db->prepare("SELECT COUNT(*) as total FROM group_rules_list WHERE bot_id = :bot_id AND group_id = :group_id");
         $stmtCount->execute(['bot_id' => $botId, 'group_id' => $chatId]);
         $total = $stmtCount->fetch()['total'];
-        $totalPages = ceil($total / $limit);
+        $totalPages = max(1, ceil($total / $limit));
 
         $stmtRules = $db->prepare("SELECT id, title FROM group_rules_list WHERE bot_id = :bot_id AND group_id = :group_id ORDER BY id DESC LIMIT :limit OFFSET :offset");
         $stmtRules->bindValue(':bot_id', $botId, PDO::PARAM_INT);
@@ -412,7 +434,7 @@ if ($callbackQuery && $callbackData) {
         exit;
     }
 
-    // مشاهده لیست قوانین توسط کاربران و اعضای عادی گروه
+    // مشاهده لیست قوانین توسط اعضا
     elseif (strpos($callbackData, 'grp_user_rules_') === 0) {
         $tg->answerCallbackQuery($callbackId);
         $page = (int)str_replace('grp_user_rules_', '', $callbackData);
@@ -422,7 +444,7 @@ if ($callbackQuery && $callbackData) {
         $stmtCount = $db->prepare("SELECT COUNT(*) as total FROM group_rules_list WHERE bot_id = :bot_id AND group_id = :group_id");
         $stmtCount->execute(['bot_id' => $botId, 'group_id' => $chatId]);
         $total = $stmtCount->fetch()['total'];
-        $totalPages = ceil($total / $limit);
+        $totalPages = max(1, ceil($total / $limit));
 
         $stmtRules = $db->prepare("SELECT id, title FROM group_rules_list WHERE bot_id = :bot_id AND group_id = :group_id ORDER BY id DESC LIMIT :limit OFFSET :offset");
         $stmtRules->bindValue(':bot_id', $botId, PDO::PARAM_INT);
@@ -491,6 +513,169 @@ if ($callbackQuery && $callbackData) {
         $tg->apiRequest('banChatMember', ['chat_id' => $chatId, 'user_id' => $targetUserId]);
 
         $tg->editMessageText($chatId, $messageId, "✅ کاربر مورد نظر به دلیل بن تیمی از ربات معلق و از گروه کاری به طور کامل اخراج شد.");
+        exit;
+    }
+
+    // تیک زدن و انتخاب نقش‌های چندگانه پرسنل به محض استارت در گروه
+    elseif (strpos($callbackData, 'grp_self_toggle_') === 0) {
+        $data = str_replace('grp_self_toggle_', '', $callbackData);
+        $parts = explode('_', $data);
+        $roleToSet = $parts[0];
+        $manhwaId  = (int)$parts[1];
+
+        // بررسی اینکه کاربر ابتدا باید تایید شده باشد
+        $stmtUser = $db->prepare("SELECT status FROM users WHERE bot_id = :bot_id AND tg_id = :tg_id LIMIT 1");
+        $stmtUser->execute(['bot_id' => $botId, 'tg_id' => $userId]);
+        $uRow = $stmtUser->fetch();
+
+        if (!$uRow || $uRow['status'] !== 'approved') {
+            $tg->answerCallbackQuery($callbackId, "⚠️ خطا: شما ابتدا باید از بخش کاربری تست استخدام داده و عضو رسمی تیم شوید!", true);
+            exit;
+        }
+
+        // بررسی وجود رکورد برای توگل کردن
+        $stmtCheck = $db->prepare("SELECT 1 FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND role = :role AND user_id = :user_id LIMIT 1");
+        $stmtCheck->execute([
+            'bot_id'  => $botId,
+            'm_id'    => $manhwaId,
+            'role'    => $roleToSet,
+            'user_id' => $userId
+        ]);
+
+        if ($stmtCheck->fetch()) {
+            // از قبل فعال بوده است؛ پس آن را حذف (Toggle Off) می‌کنیم
+            $stmtDel = $db->prepare("DELETE FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND role = :role AND user_id = :user_id");
+            $stmtDel->execute([
+                'bot_id'  => $botId,
+                'm_id'    => $manhwaId,
+                'role'     => $roleToSet,
+                'user_id' => $userId
+            ]);
+            $tg->answerCallbackQuery($callbackId, "❌ نقش " . ($roleToSet === 'translator' ? 'مترجم' : ($roleToSet === 'cleaner' ? 'کلینر' : 'تایپیست')) . " برای شما غیرفعال شد.");
+        } else {
+            // وجود نداشته؛ پس آن را اضافه (Toggle On) می‌کنیم با قید ON CONFLICT جهت جلوگیری از کرش
+            $stmtIns = $db->prepare("
+                INSERT INTO team_assignments (bot_id, manhwa_id, role, user_id) 
+                VALUES (:bot_id, :manhwa_id, :role, :user_id)
+                ON CONFLICT (bot_id, manhwa_id, role) DO UPDATE SET user_id = EXCLUDED.user_id
+            ");
+            $stmtIns->execute([
+                'bot_id'    => $botId,
+                'manhwa_id' => $manhwaId,
+                'role'      => $roleToSet,
+                'user_id'   => $userId
+            ]);
+            $tg->answerCallbackQuery($callbackId, "✅ نقش " . ($roleToSet === 'translator' ? 'مترجم' : ($roleToSet === 'cleaner' ? 'کلینر' : 'تایپیست')) . " با موفقیت برای شما تیک خورد.");
+        }
+
+        // بروزرسانی فیزیکی تیک‌های منوی شیشه‌ای بدون ارسال پیام جدید
+        $stmtAss = $db->prepare("SELECT role FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND user_id = :user_id");
+        $stmtAss->execute(['bot_id' => $botId, 'm_id' => $manhwaId, 'user_id' => $userId]);
+        $activeAss = $stmtAss->fetchAll(PDO::FETCH_COLUMN);
+
+        $isTrans = in_array('translator', $activeAss);
+        $isClean = in_array('cleaner', $activeAss);
+        $isType  = in_array('typesetter', $activeAss);
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => ($isTrans ? '✅ مترجم' : '📝 مترجم'), 'callback_data' => "grp_self_toggle_translator_{$manhwaId}"],
+                    ['text' => ($isClean ? '✅ کلینر' : '🖌 کلینر'), 'callback_data' => "grp_self_toggle_cleaner_{$manhwaId}"]
+                ],
+                [
+                    ['text' => ($isType ? '✅ تایپیست' : '⌨️ تایپیست'), 'callback_data' => "grp_self_toggle_typesetter_{$manhwaId}"]
+                ],
+                [['text' => '❌ بستن پنل', 'callback_data' => 'grp_cancel']]
+            ]
+        ];
+
+        $tg->editMessageText($chatId, $messageId, "⚔️ <b>پنل خودکار انتساب نقش‌ها:</b>\n\n👤 عضو محترم: <b>{$fullName}</b>\n\nنقش‌های کاری خود را تیک بزنید:", $keyboard);
+        exit;
+    }
+
+    // دریافت و ارسال چپتر خام آرشیو از طریق دکمه شیشه‌ای
+    elseif (strpos($callbackData, 'grp_raw_get_') === 0) {
+        $rawId = (int)str_replace('grp_raw_get_', '', $callbackData);
+        $tg->answerCallbackQuery($callbackId, "در حال بارگذاری فایل...");
+
+        $stmtRaw = $db->prepare("SELECT file_id, file_name, chapter_num, manhwa_id FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+        $stmtRaw->execute(['bot_id' => $botId, 'id' => $rawId]);
+        $raw = $stmtRaw->fetch();
+
+        if ($raw) {
+            $stmtM = $db->prepare("SELECT title FROM manhwas WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+            $stmtM->execute(['bot_id' => $botId, 'id' => $raw['manhwa_id']]);
+            $mTitle = $stmtM->fetch()['title'] ?? 'مانهوا';
+
+            $caption = "📁 <b>فایل خام چپتر {$raw['chapter_num']} مانهوای «{$mTitle}»</b>";
+            $tg->sendDocument($chatId, $raw['file_id'], $caption);
+        } else {
+            $tg->sendMessage($chatId, "❌ فایل خام یافت نشد.");
+        }
+        exit;
+    }
+
+    // هندل دکمه آغاز سرچ در گروه
+    elseif (strpos($callbackData, 'grp_raw_search_init_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $manhwaId = (int)str_replace('grp_raw_search_init_', '', $callbackData);
+
+        FSM::setStep($botId, $userId, 'grp_waiting_ch_search');
+        $tg->sendMessage($chatId, "🔍 <b>عدد چپتر مورد نظر خود را ارسال کنید:</b>", [
+            'reply_to_message_id' => $messageId
+        ]);
+        exit;
+    }
+
+    // هندل صفحات ورق‌زن چپترهای خام در گروه
+    elseif (strpos($callbackData, 'grp_raw_page_') === 0) {
+        $tg->answerCallbackQuery($callbackId);
+        $data = str_replace('grp_raw_page_', '', $callbackData);
+        $parts = explode('_', $data);
+        $manhwaId = (int)$parts[0];
+        $page     = (int)$parts[1];
+
+        $limit = 5;
+        $offset = ($page - 1) * $limit;
+
+        $stmtCount = $db->prepare("SELECT COUNT(*) as total FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id");
+        $stmtCount->execute(['bot_id' => $botId, 'm_id' => $manhwaId]);
+        $total = $stmtCount->fetch()['total'];
+        $totalPages = max(1, ceil($total / $limit));
+
+        $stmt = $db->prepare("SELECT id, chapter_num FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id ORDER BY chapter_num DESC LIMIT :limit OFFSET :offset");
+        $stmt->bindValue(':bot_id', $botId, PDO::PARAM_INT);
+        $stmt->bindValue(':m_id', $manhwaId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        $raws = $stmt->fetchAll();
+
+        $buttons = [];
+        $buttons[] = [['text' => '🔍 جستجو چپتر خام', 'callback_data' => "grp_raw_search_init_{$manhwaId}"]];
+
+        foreach ($raws as $r) {
+            $buttons[] = [['text' => "📁 دریافت چپتر {$r['chapter_num']}", 'callback_data' => "grp_raw_get_{$r['id']}"]];
+        }
+
+        $navButtons = [];
+        if ($page > 1) {
+            $navButtons[] = ['text' => '◀️ قبلی', 'callback_data' => "grp_raw_page_{$manhwaId}_" . ($page - 1)];
+        }
+        if ($page < $totalPages) {
+            $navButtons[] = ['text' => 'بعدی ▶️', 'callback_data' => "grp_raw_page_{$manhwaId}_" . ($page + 1)];
+        }
+        if (!empty($navButtons)) {
+            $buttons[] = $navButtons;
+        }
+        $buttons[] = [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']];
+
+        $stmtM = $db->prepare("SELECT title FROM manhwas WHERE bot_id = :bot_id AND id = :id LIMIT 1");
+        $stmtM->execute(['bot_id' => $botId, 'id' => $manhwaId]);
+        $manhwaTitle = $stmtM->fetch()['title'] ?? 'مانهوا';
+
+        $tg->editMessageText($chatId, $messageId, "📂 <b>لیست چپترهای خام مانهوای «{$manhwaTitle}» (صفحه {$page} از {$totalPages}):</b>", ['inline_keyboard' => $buttons]);
         exit;
     }
 }
@@ -886,7 +1071,7 @@ if (!empty($text)) {
         exit;
     }
 
-    // ۱۰. جستجوی چپتر خام از آرشیو با دستور اسلشی یا دکمه شیشه‌ای
+    // ۱۰. جستجوی چپتر خام از آرشیو با دستور اسلشی مستقیم
     elseif (preg_match('/^\/chapter\s+(\d+)/', $text, $matchRawCh)) {
         $chNum = (int)$matchRawCh[1];
 
@@ -992,8 +1177,8 @@ if (!empty($text)) {
         ];
 
         $tg->sendMessage($chatId, "⚠️ <b>درخواست بن تیمی کاربر «{$targetName}»:</b>\n\nبا تایید این درخواست، کاربر از ربات معلق شده و از این گروه مانهوا به طور دائمی اخراج خواهد شد. آیا مطمئن هستید؟", [
-            'inline_keyboard' => $keyboard['inline_keyboard'],
-            'reply_to_message_id' => $message['message_id']
+            'reply_to_message_id' => $message['message_id'],
+            'reply_markup' => $keyboard
         ]);
         exit;
     }
@@ -1016,10 +1201,99 @@ if (!empty($text)) {
         exit;
     }
 
-    // ۱۲. راهنمای ربات در گروه
+    // ۱۳. دستور شیشه‌ای «لیست چپتر» برای پرسنل جهت ورق زدن و سرچ در گروه
+    elseif ($text === 'لیست چپتر' || $text === '/chapters') {
+        $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
+        $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
+        $manhwa = $stmtM->fetch();
+
+        if (!$manhwa) {
+            $tg->sendMessage($chatId, "❌ ابتدا باید این گروه را با دستور <code>/add_manhwa</code> به یک پروژه مانهوا متصل کنید.");
+            exit;
+        }
+
+        $manhwaId = $manhwa['id'];
+        $page = 1;
+        $limit = 5;
+        $offset = ($page - 1) * $limit;
+
+        $stmtCount = $db->prepare("SELECT COUNT(*) as total FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id");
+        $stmtCount->execute(['bot_id' => $botId, 'm_id' => $manhwaId]);
+        $total = $stmtCount->fetch()['total'];
+        $totalPages = max(1, ceil($total / $limit));
+
+        $stmt = $db->prepare("SELECT id, chapter_num FROM manhwa_raw_chapters WHERE bot_id = :bot_id AND manhwa_id = :m_id ORDER BY chapter_num DESC LIMIT :limit OFFSET :offset");
+        $stmt->bindValue(':bot_id', $botId, PDO::PARAM_INT);
+        $stmt->bindValue(':m_id', $manhwaId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        $raws = $stmt->fetchAll();
+
+        $buttons = [];
+        $buttons[] = [['text' => '🔍 جستجو چپتر خام', 'callback_data' => "grp_raw_search_init_{$manhwaId}"]];
+
+        foreach ($raws as $r) {
+            $buttons[] = [['text' => "📁 دریافت چپتر {$r['chapter_num']}", 'callback_data' => "grp_raw_get_{$r['id']}"]];
+        }
+
+        $navButtons = [];
+        if ($page < $totalPages) {
+            $navButtons[] = ['text' => 'بعدی ▶️', 'callback_data' => "grp_raw_page_{$manhwaId}_" . ($page + 1)];
+        }
+        if (!empty($navButtons)) {
+            $buttons[] = $navButtons;
+        }
+        $buttons[] = [['text' => '❌ بستن منو', 'callback_data' => 'grp_cancel']];
+
+        $tg->sendMessage($chatId, "📂 <b>لیست چپترهای خام مانهوای «{$manhwa['title']}» (صفحه {$page} از {$totalPages}):</b>", [
+            'reply_markup' => ['inline_keyboard' => $buttons]
+        ]);
+        exit;
+    }
+
+    // ۱۴. دستور استارت در گروه جهت انتساب خودکار نقش‌های چندگانه پرسنل
+    elseif ($text === 'استارت' || $text === 'شروع' || strpos($text, '/start') === 0) {
+        $stmtM = $db->prepare("SELECT id, title FROM manhwas WHERE bot_id = :bot_id AND group_id = :group_id LIMIT 1");
+        $stmtM->execute(['bot_id' => $botId, 'group_id' => $chatId]);
+        $manhwa = $stmtM->fetch();
+
+        if ($manhwa) {
+            // واکشی نقش‌های فعال کاربر برای این مانهوا جهت نمایش تیک‌های سبز
+            $stmtAss = $db->prepare("SELECT role FROM team_assignments WHERE bot_id = :bot_id AND manhwa_id = :m_id AND user_id = :user_id");
+            $stmtAss->execute(['bot_id' => $botId, 'm_id' => $manhwa['id'], 'user_id' => $userId]);
+            $activeAss = $stmtAss->fetchAll(PDO::FETCH_COLUMN);
+
+            $isTrans = in_array('translator', $activeAss);
+            $isClean = in_array('cleaner', $activeAss);
+            $isType  = in_array('typesetter', $activeAss);
+
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => ($isTrans ? '✅ مترجم' : '📝 مترجم'), 'callback_data' => "grp_self_toggle_translator_{$manhwa['id']}"],
+                        ['text' => ($isClean ? '✅ کلینر' : '🖌 کلینر'), 'callback_data' => "grp_self_toggle_cleaner_{$manhwa['id']}"]
+                    ],
+                    [
+                        ['text' => ($isType ? '✅ تایپیست' : '⌨️ تایپیست'), 'callback_data' => "grp_self_toggle_typesetter_{$manhwa['id']}"]
+                    ],
+                    [['text' => '❌ بستن پنل', 'callback_data' => 'grp_cancel']]
+                ]
+            ];
+
+            $tg->sendMessage($chatId, "⚔️ <b>پنل خودکار انتساب نقش‌ها برای مانهوای «{$manhwa['title']}»:</b>\n\n👤 عضو محترم: <b>{$fullName}</b>\n\nنقش‌های کاری خود را در این پروژه با تیک زدن دکمه‌های زیر مشخص کنید تا حقوق چپترها متناسب با فعالیت‌های شما تقسیم و واریز شود:", $keyboard);
+        } else {
+            $tg->sendMessage($chatId, "❌ ابتدا گروه را با دستور <code>/add_manhwa</code> به پروژه متصل کنید.");
+        }
+        exit;
+    }
+
+    // ۱۵. راهنمای ربات در گروه
     elseif ($text === '/help' || $text === 'راهنما') {
         $helpText = "📖 <b>راهنمای دستورات گروه مانهوا:</b>\n\n"
                   . "📌 <b>دستورات شیشه‌ای و فارسی جدید:</b>\n"
+                  . "├ <code>استارت</code> ➔ منوی شیشه‌ای تیک زدن و انتخاب نقش‌های چندگانه پرسنل در این مانهوا\n"
+                  . "├ <code>لیست چپتر</code> ➔ ورق زدن و دانلود خودکار چپترهای خام به همراه سربرگ جستجو\n"
                   . "├ <code>افزودن تیم</code> ➔ مدیریت شیشه‌ای و انتساب پرسنل با جستجو\n"
                   . "├ <code>تنظیم قیمت</code> ➔ پیکربندی نرخ شیشه‌ای دستمزد آثار\n"
                   . "├ <code>مدیریت قانون</code> ➔ ثبت و حذف عنوان‌دار قوانین تیمی\n"
