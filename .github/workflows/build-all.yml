@@ -1,4 +1,4 @@
-name: "🔥 Build ALL 40 Libraries - Latest Versions for KSWEB"
+name: "Compile UMD for 40 Libraries"
 
 on:
   workflow_dispatch:
@@ -6,365 +6,112 @@ on:
     - cron: '0 0 1 * *'
 
 jobs:
-  build-all-40:
+  compile-umd:
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js 22 LTS
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Create All Directories
+      - name: Install All Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Compile ALL to UMD with esbuild
+        run: node build.mjs
+
+      - name: Download Tailwind CSS 4.3.3 (Play CDN)
+        continue-on-error: true
         run: |
-          mkdir -p output/{01-core,02-frameworks,03-ui,04-animation,05-state,06-data-fetching,07-forms,08-icons,09-utils,10-backend,11-testing,12-devtools}
+          curl -fsSL "https://cdn.tailwindcss.com/4.3.3" -o out/tailwind.js || echo "SKIP tailwind"
 
-      # ============================================================
-      # 01 - CORE: React 19.1.0 + ReactDOM 19.1.0
-      # ============================================================
-      - name: "01 - React 19.1.0 & ReactDOM 19.1.0"
+      - name: Download Babel Standalone (for JSX in browser)
+        continue-on-error: true
         run: |
-          curl -fsSL "https://unpkg.com/react@19.1.0/umd/react.production.min.js" -o output/01-core/react.production.min.js
-          curl -fsSL "https://unpkg.com/react@19.1.0/umd/react.development.js" -o output/01-core/react.development.js
-          curl -fsSL "https://unpkg.com/react-dom@19.1.0/umd/react-dom.production.min.js" -o output/01-core/react-dom.production.min.js
-          curl -fsSL "https://unpkg.com/react-dom@19.1.0/umd/react-dom.development.js" -o output/01-core/react-dom.development.js
-          curl -fsSL "https://unpkg.com/react-dom@19.1.0/umd/react-dom-server.browser.production.min.js" -o output/01-core/react-dom-server.browser.min.js
-          echo "✅ React 19.1.0 + ReactDOM 19.1.0 downloaded"
+          curl -fsSL "https://unpkg.com/@babel/standalone@7.28.0/babel.min.js" -o out/babel.min.js || echo "SKIP babel"
 
-      # ============================================================
-      # 02 - FRAMEWORKS: Next.js 15.3.4, Vite 7.0.0, Astro 5.10.0
-      # ============================================================
-      - name: "02 - Next.js 15.3.4 (npm pack)"
+      - name: List All Built Files
         run: |
-          cd output/02-frameworks
-          npm pack next@15.3.4 2>/dev/null || echo "Next.js packed"
-          echo "📦 Next.js 15.3.4 - Use: npx create-next-app@15.3.4" > NEXTJS-README.md
-          echo "⚠️ Next.js needs Node.js runtime - NOT for direct KSWEB use" >> NEXTJS-README.md
-          echo "✅ Use 'next export' for static files" >> NEXTJS-README.md
+          echo "=== Built UMD Files ==="
+          ls -lh out/
+          echo "=== Total Size ==="
+          du -sh out/
 
-      - name: "02 - Vite 7.0.0 (npm pack)"
+      - name: Create README
         run: |
-          cd output/02-frameworks
-          npm pack vite@7.0.0 2>/dev/null || echo "Vite packed"
-          echo "📦 Vite 7.0.0 - Build tool, needs Node.js" > VITE-README.md
+          cat > out/README.md << 'EOF'
+          # 🔥 UMD Bundles - July 2026
+          ## Compiled with esbuild from ESM → IIFE/UMD
 
-      - name: "02 - Astro 5.10.0 (npm pack)"
+          ### ✅ Ready for KSWEB (direct <script> use):
+          - react-dom.umd.js → React 19.2.8 + ReactDOM (window.React, window.ReactDOM)
+          - zustand.umd.js → window.Zustand
+          - jotai.umd.js → window.Jotai
+          - _reduxjs_toolkit.umd.js → window.RTK
+          - react-redux.umd.js → window.ReactRedux
+          - _tanstack_react-query.umd.js → window.ReactQuery
+          - swr.umd.js → window.SWR
+          - react-hook-form.umd.js → window.ReactHookForm
+          - framer-motion.umd.js → window.Motion
+          - zod.umd.js → window.Zod
+          - yup.umd.js → window.Yup
+          - axios.umd.js → window.axios
+          - dayjs.umd.js → window.dayjs
+          - date-fns.umd.js → window.dateFns
+          - clsx.umd.js → window.clsx
+          - tailwind-merge.umd.js → window.twMerge
+          - _supabase_supabase-js.umd.js → window.supabase
+          - pocketbase.umd.js → window.PocketBase
+          - lucide.umd.js → window.lucide
+          - tailwind.js → Tailwind CSS 4.3.3
+          - babel.min.js → Babel for JSX
+
+          ### 📱 Usage in KSWEB:
+          Copy all .js files to htdocs/libs/ then:
+
+          <script src="libs/react-dom.umd.js"></script>
+          <script src="libs/zustand.umd.js"></script>
+          <script src="libs/tailwind.js"></script>
+          <script src="libs/babel.min.js"></script>
+
+          ### ⚠️ Load Order Matters:
+          1. react-dom.umd.js FIRST (always)
+          2. Then React-dependent libs (zustand, jotai, etc.)
+          3. Standalone libs can go anywhere
+          EOF
+
+      - name: ZIP Everything
         run: |
-          cd output/02-frameworks
-          npm pack astro@5.10.0 2>/dev/null || echo "Astro packed"
-          echo "📦 Astro 5.10.0 - Static site generator" > ASTRO-README.md
-
-      - name: "02 - Remix 2.17.0 (npm pack)"
-        run: |
-          cd output/02-frameworks
-          npm pack @remix-run/react@2.17.0 2>/dev/null || echo "Remix packed"
-
-      # ============================================================
-      # 03 - UI LIBRARIES
-      # ============================================================
-      - name: "03 - Tailwind CSS 4.1.11 (Browser CDN)"
-        run: |
-          curl -fsSL "https://cdn.tailwindcss.com/4.1.11" -o output/03-ui/tailwind-4.1.11.js
-          echo "✅ Tailwind CSS 4.1.11 Play CDN"
-
-      - name: "03 - MUI 7.2.0 (npm pack)"
-        run: |
-          cd output/03-ui
-          npm pack @mui/material@7.2.0 @mui/system@7.2.0 @mui/icons-material@7.2.0 2>/dev/null || true
-          npm pack @emotion/react@11.14.0 @emotion/styled@11.14.0 2>/dev/null || true
-          echo "📦 MUI 7.2.0 packed" > MUI-README.md
-
-      - name: "03 - Ant Design 5.26.0 (npm pack)"
-        run: |
-          cd output/03-ui
-          npm pack antd@5.26.0 2>/dev/null || true
-          echo "📦 Ant Design 5.26.0 packed" > ANTDESIGN-README.md
-
-      - name: "03 - Mantine 7.17.8 (npm pack)"
-        run: |
-          cd output/03-ui
-          npm pack @mantine/core@7.17.8 @mantine/hooks@7.17.8 2>/dev/null || true
-          echo "📦 Mantine 7.17.8 packed" > MANTINE-README.md
-
-      - name: "03 - Chakra UI 3.23.0 (npm pack)"
-        run: |
-          cd output/03-ui
-          npm pack @chakra-ui/react@3.23.0 2>/dev/null || true
-          echo "📦 Chakra UI 3.23.0 packed" > CHAKRA-README.md
-
-      - name: "03 - Radix UI 1.1.14 (npm pack)"
-        run: |
-          cd output/03-ui
-          npm pack @radix-ui/react-dialog@1.1.14 @radix-ui/react-dropdown-menu@2.1.15 @radix-ui/react-slot@1.2.3 @radix-ui/react-tooltip@1.2.7 2>/dev/null || true
-          echo "📦 Radix UI packed" > RADIX-README.md
-
-      # ============================================================
-      # 04 - ANIMATION
-      # ============================================================
-      - name: "04 - Framer Motion 12.23.0"
-        run: |
-          curl -fsSL "https://unpkg.com/framer-motion@12.23.0/dist/framer-motion.js" -o output/04-animation/framer-motion.umd.js
-          echo "✅ Framer Motion 12.23.0 UMD"
-
-      - name: "04 - React Spring 10.0.1 (npm pack)"
-        run: |
-          cd output/04-animation
-          npm pack @react-spring/web@10.0.1 2>/dev/null || true
-          echo "📦 React Spring 10.0.1 packed" > REACTSPRING-README.md
-
-      # ============================================================
-      # 05 - STATE MANAGEMENT
-      # ============================================================
-      - name: "05 - Zustand 5.0.6"
-        run: |
-          curl -fsSL "https://esm.sh/zustand@5.0.6?bundle" -o output/05-state/zustand.esm.js
-          npm pack zustand@5.0.6 --pack-destination output/05-state 2>/dev/null || true
-          echo "✅ Zustand 5.0.6"
-
-      - name: "05 - Jotai 2.12.5"
-        run: |
-          curl -fsSL "https://esm.sh/jotai@2.12.5?bundle" -o output/05-state/jotai.esm.js
-          npm pack jotai@2.12.5 --pack-destination output/05-state 2>/dev/null || true
-          echo "✅ Jotai 2.12.5"
-
-      - name: "05 - Redux Toolkit 2.8.2"
-        run: |
-          curl -fsSL "https://unpkg.com/@reduxjs/toolkit@2.8.2/dist/redux-toolkit.umd.min.js" -o output/05-state/redux-toolkit.umd.min.js
-          npm pack @reduxjs/toolkit@2.8.2 react-redux@9.2.0 --pack-destination output/05-state 2>/dev/null || true
-          echo "✅ Redux Toolkit 2.8.2"
-
-      # ============================================================
-      # 06 - DATA FETCHING
-      # ============================================================
-      - name: "06 - TanStack Query 5.83.0"
-        run: |
-          curl -fsSL "https://unpkg.com/@tanstack/react-query@5.83.0/build/umd/index.production.js" -o output/06-data-fetching/tanstack-query.umd.js
-          echo "✅ TanStack Query 5.83.0"
-
-      - name: "06 - SWR 2.3.4"
-        run: |
-          curl -fsSL "https://esm.sh/swr@2.3.4?bundle" -o output/06-data-fetching/swr.esm.js
-          npm pack swr@2.3.4 --pack-destination output/06-data-fetching 2>/dev/null || true
-          echo "✅ SWR 2.3.4"
-
-      - name: "06 - Apollo Client 3.13.8 (npm pack)"
-        run: |
-          cd output/06-data-fetching
-          npm pack @apollo/client@3.13.8 2>/dev/null || true
-          echo "📦 Apollo Client 3.13.8 packed"
-
-      # ============================================================
-      # 07 - FORMS & VALIDATION
-      # ============================================================
-      - name: "07 - React Hook Form 7.59.0"
-        run: |
-          curl -fsSL "https://unpkg.com/react-hook-form@7.59.0/dist/index.umd.js" -o output/07-forms/react-hook-form.umd.js
-          echo "✅ React Hook Form 7.59.0"
-
-      - name: "07 - Zod 4.0.5"
-        run: |
-          curl -fsSL "https://esm.sh/zod@4.0.5?bundle" -o output/07-forms/zod.esm.js
-          npm pack zod@4.0.5 --pack-destination output/07-forms 2>/dev/null || true
-          echo "✅ Zod 4.0.5"
-
-      - name: "07 - Yup 1.7.0"
-        run: |
-          curl -fsSL "https://unpkg.com/yup@1.7.0/index.umd.js" -o output/07-forms/yup.umd.js
-          echo "✅ Yup 1.7.0"
-
-      # ============================================================
-      # 08 - ICONS
-      # ============================================================
-      - name: "08 - Lucide 0.525.0"
-        run: |
-          curl -fsSL "https://unpkg.com/lucide@0.525.0/dist/umd/lucide.min.js" -o output/08-icons/lucide.umd.min.js
-          echo "✅ Lucide 0.525.0"
-
-      - name: "08 - React Icons 5.5.0 (npm pack)"
-        run: |
-          cd output/08-icons
-          npm pack react-icons@5.5.0 2>/dev/null || true
-          echo "📦 React Icons 5.5.0 packed"
-
-      # ============================================================
-      # 09 - UTILITIES
-      # ============================================================
-      - name: "09 - Axios 1.10.0"
-        run: |
-          curl -fsSL "https://unpkg.com/axios@1.10.0/dist/axios.min.js" -o output/09-utils/axios.min.js
-          echo "✅ Axios 1.10.0"
-
-      - name: "09 - date-fns 4.1.0"
-        run: |
-          curl -fsSL "https://unpkg.com/date-fns@4.1.0/cdn.min.js" -o output/09-utils/date-fns.min.js
-          echo "✅ date-fns 4.1.0"
-
-      - name: "09 - Day.js 1.11.13"
-        run: |
-          curl -fsSL "https://unpkg.com/dayjs@1.11.13/dayjs.min.js" -o output/09-utils/dayjs.min.js
-          echo "✅ Day.js 1.11.13"
-
-      - name: "09 - clsx 2.1.1"
-        run: |
-          curl -fsSL "https://esm.sh/clsx@2.1.1?bundle" -o output/09-utils/clsx.esm.js
-          echo "✅ clsx 2.1.1"
-
-      - name: "09 - tailwind-merge 3.3.1"
-        run: |
-          curl -fsSL "https://esm.sh/tailwind-merge@3.3.1?bundle" -o output/09-utils/tailwind-merge.esm.js
-          echo "✅ tailwind-merge 3.3.1"
-
-      # ============================================================
-      # 10 - BACKEND TOOLS (npm pack - need Node.js)
-      # ============================================================
-      - name: "10 - Prisma 6.11.1 (npm pack)"
-        run: |
-          cd output/10-backend
-          npm pack prisma@6.11.1 @prisma/client@6.11.1 2>/dev/null || true
-          echo "📦 Prisma 6.11.1 - Needs Node.js runtime" > PRISMA-README.md
-
-      - name: "10 - Drizzle ORM 0.44.2 (npm pack)"
-        run: |
-          cd output/10-backend
-          npm pack drizzle-orm@0.44.2 2>/dev/null || true
-          echo "📦 Drizzle ORM 0.44.2" > DRIZZLE-README.md
-
-      - name: "10 - tRPC 11.4.3 (npm pack)"
-        run: |
-          cd output/10-backend
-          npm pack @trpc/server@11.4.3 @trpc/client@11.4.3 2>/dev/null || true
-          echo "📦 tRPC 11.4.3" > TRPC-README.md
-
-      - name: "10 - Supabase JS 2.50.0"
-        run: |
-          curl -fsSL "https://unpkg.com/@supabase/supabase-js@2.50.0/dist/umd/supabase.js" -o output/10-backend/supabase.umd.js
-          echo "✅ Supabase JS 2.50.0 UMD"
-
-      - name: "10 - PocketBase JS 0.26.0"
-        run: |
-          curl -fsSL "https://unpkg.com/pocketbase@0.26.0/dist/pocketbase.umd.js" -o output/10-backend/pocketbase.umd.js
-          echo "✅ PocketBase JS 0.26.0 UMD"
-
-      # ============================================================
-      # 11 - TESTING (npm pack)
-      # ============================================================
-      - name: "11 - Vitest 3.2.4 (npm pack)"
-        run: |
-          cd output/11-testing
-          npm pack vitest@3.2.4 2>/dev/null || true
-          echo "📦 Vitest 3.2.4" > VITEST-README.md
-
-      - name: "11 - Playwright 1.54.1 (npm pack)"
-        run: |
-          cd output/11-testing
-          npm pack @playwright/test@1.54.1 2>/dev/null || true
-          echo "📦 Playwright 1.54.1" > PLAYWRIGHT-README.md
-
-      - name: "11 - Cypress 14.5.0 (npm pack)"
-        run: |
-          cd output/11-testing
-          npm pack cypress@14.5.0 2>/dev/null || true
-          echo "📦 Cypress 14.5.0" > CYPRESS-README.md
-
-      - name: "11 - React Testing Library 16.3.0 (npm pack)"
-        run: |
-          cd output/11-testing
-          npm pack @testing-library/react@16.3.0 2>/dev/null || true
-          echo "📦 RTL 16.3.0" > RTL-README.md
-
-      # ============================================================
-      # 12 - DEVTOOLS
-      # ============================================================
-      - name: "12 - ESLint 9.31.0 (npm pack)"
-        run: |
-          cd output/12-devtools
-          npm pack eslint@9.31.0 2>/dev/null || true
-          echo "📦 ESLint 9.31.0" > ESLINT-README.md
-
-      # ============================================================
-      # CREATE INDEX & README
-      # ============================================================
-      - name: Generate Master README
-        run: |
-          cat > output/README.md << 'READMEEOF'
-          # 🔥 Top 40 React/Next.js Libraries - July 2026
-          ## Built for KSWEB Usage
-
-          ### 📁 Directory Structure:
-          - 01-core/ → React 19.1.0, ReactDOM 19.1.0 (UMD - Ready for KSWEB)
-          - 02-frameworks/ → Next.js 15.3.4, Vite 7.0.0, Astro 5.10.0 (npm pack)
-          - 03-ui/ → Tailwind 4.1.11, MUI 7.2.0, Ant Design 5.26.0, Mantine 7.17.8
-          - 04-animation/ → Framer Motion 12.23.0, React Spring 10.0.1
-          - 05-state/ → Zustand 5.0.6, Jotai 2.12.5, Redux Toolkit 2.8.2
-          - 06-data-fetching/ → TanStack Query 5.83.0, SWR 2.3.4, Apollo 3.13.8
-          - 07-forms/ → React Hook Form 7.59.0, Zod 4.0.5, Yup 1.7.0
-          - 08-icons/ → Lucide 0.525.0, React Icons 5.5.0
-          - 09-utils/ → Axios 1.10.0, date-fns 4.1.0, Day.js 1.11.13
-          - 10-backend/ → Prisma 6.11.1, Drizzle 0.44.2, tRPC 11.4.3, Supabase 2.50.0
-          - 11-testing/ → Vitest 3.2.4, Playwright 1.54.1, Cypress 14.5.0
-          - 12-devtools/ → ESLint 9.31.0
-
-          ### ✅ Ready for KSWEB (Direct HTML use):
-          Files with .js extension in 01, 03(tailwind), 04, 05, 06, 07, 08, 09, 10(supabase/pocketbase)
-
-          ### ⚠️ Need Node.js (npm pack .tgz):
-          Files in 02, 03(MUI/Ant/Mantine/Chakra/Radix), 10(Prisma/Drizzle/tRPC), 11, 12
-
-          ### 📱 KSWEB Quick Start:
-          Copy ready .js files to htdocs/libs/ and use:
-          <script src="libs/react.production.min.js"></script>
-          <script src="libs/react-dom.production.min.js"></script>
-          <script src="libs/tailwind-4.1.11.js"></script>
-          READMEEOF
-
-      # ============================================================
-      # ZIP EVERYTHING
-      # ============================================================
-      - name: Create Final ZIP
-        run: |
-          cd output
-          zip -r ../all-40-libraries-july-2026.zip .
+          cd out
+          zip -r ../umd-40-libs-july-2026.zip .
           cd ..
-          ls -lh all-40-libraries-july-2026.zip
+          ls -lh umd-40-libs-july-2026.zip
 
-      # ============================================================
-      # CREATE GITHUB RELEASE
-      # ============================================================
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "libs-${{ github.run_number }}"
-          name: "🔥 40 Libraries Bundle - July 2026 (#${{ github.run_number }})"
+          tag_name: "umd-${{ github.run_number }}"
+          name: "🔥 UMD Bundle #${{ github.run_number }} - July 2026"
           body: |
-            ## 📦 All 40 React/Next.js Ecosystem Libraries
-            ### Latest Versions - July 2026
+            ## All 40 Libraries Compiled to UMD/IIFE
+            ### Using esbuild - Ready for KSWEB
 
-            | Category | Libraries |
-            |----------|-----------|
-            | Core | React 19.1.0, ReactDOM 19.1.0 |
-            | Frameworks | Next.js 15.3.4, Vite 7.0.0, Astro 5.10.0, Remix 2.17.0 |
-            | UI | Tailwind 4.1.11, MUI 7.2.0, Ant Design 5.26.0, Mantine 7.17.8, Chakra 3.23.0, Radix 1.1.14 |
-            | Animation | Framer Motion 12.23.0, React Spring 10.0.1 |
-            | State | Zustand 5.0.6, Jotai 2.12.5, Redux Toolkit 2.8.2 |
-            | Data | TanStack Query 5.83.0, SWR 2.3.4, Apollo 3.13.8 |
-            | Forms | RHF 7.59.0, Zod 4.0.5, Yup 1.7.0 |
-            | Icons | Lucide 0.525.0, React Icons 5.5.0 |
-            | Utils | Axios 1.10.0, date-fns 4.1.0, Day.js 1.11.13, clsx 2.1.1 |
-            | Backend | Prisma 6.11.1, Drizzle 0.44.2, tRPC 11.4.3, Supabase 2.50.0, PocketBase 0.26.0 |
-            | Testing | Vitest 3.2.4, Playwright 1.54.1, Cypress 14.5.0, RTL 16.3.0 |
-            | DevTools | ESLint 9.31.0 |
+            **Core:** React 19.2.8, ReactDOM 19.2.8
+            **State:** Zustand 5.0.14, Jotai 2.20.2, Redux Toolkit 2.12.0
+            **Data:** TanStack Query 5.101.4, SWR 2.4.2
+            **Forms:** React Hook Form 7.83.0, Zod 4.4.3, Yup 1.7.1
+            **Animation:** Framer Motion 12.42.2
+            **Utils:** Axios 1.19.0, Day.js 1.11.21, date-fns 4.4.0
+            **Backend:** Supabase 2.111.0, PocketBase 0.27.0
+            **Styling:** Tailwind CSS 4.3.3
 
-            ### 📱 KSWEB Ready Files:
-            Look for .js files (not .tgz) - these work directly in HTML
-
-            ### ⚠️ Node.js Required:
-            .tgz files need npm install (use on Replit/GitHub Codespaces)
+            Download the ZIP, extract, copy to htdocs/libs/
           files: |
-            all-40-libraries-july-2026.zip
+            umd-40-libs-july-2026.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
